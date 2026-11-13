@@ -70,7 +70,7 @@ planner_server:
       escape_dist: 1.5
       escape_speed: 0.3
       escape_clear: 0.5
-      max_escape: 0            # ★ 0/负数 = 无限逃逸（不再进 FAILED）
+      max_escape: 0.0          # ★ 0/负数 = 无限逃逸（不再进 FAILED）  ← 必须是小数：代码声明的是 double
       escape_allow_enclosed: true   # 16 方向全堵时不判 FAILED，缩距离原地小范围摆动
       escape_min_clear: 0.35        # 判定"被围住"的可用长度阈值（m）
       # ★★★ 2026-11-12（晚，**实测依据**）：true → **false**（回到 T-DT 上游默认）。

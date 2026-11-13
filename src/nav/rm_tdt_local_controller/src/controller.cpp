@@ -45,7 +45,14 @@ class TdtLocalController : public nav2_core::Controller {
     tf_ = tf;
     costmap_ros_ = costmap_ros;
     logger_ = node_->get_logger();
-    auto d = [&](const std::string& k, auto def) { return node_->declare_parameter(name + "." + k, def); };
+    // ★★★ 2026-11-14：同 planner —— configure() 必须幂等（重试时不能重复 declare）
+    auto d = [&](const std::string& k, auto def) -> decltype(def) {
+      const std::string full = name + "." + k;
+      if (node_->has_parameter(full)) {
+        return node_->get_parameter(full).get_value<decltype(def)>();
+      }
+      return node_->declare_parameter(full, def);
+    };
     lookahead_ = d("lookahead", 4.0);
     max_vel_ = d("max_vel", 1.5);
     max_acc_ = d("max_acc", 3.0);

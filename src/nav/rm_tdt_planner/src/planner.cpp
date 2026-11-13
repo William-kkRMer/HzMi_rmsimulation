@@ -44,7 +44,18 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     costmap_ros_ = costmap_ros;
     tf_ = tf;
     logger_ = node_->get_logger();
-    auto d = [&](const std::string& k, auto def) { return node_->declare_parameter(name + "." + k, def); };
+    // ★★★ 2026-11-14：**configure() 必须幂等**。
+    //   nav2 lifecycle_manager（以及本仓 nav_lifecycle_guard）在 configure 失败后会重试；
+    //   第二次进入本函数时 `declare_parameter` 抛
+    //   "parameter 'GridBased.xxx' has already been declared" ⇒ planner 永远起不来。
+    //   实测：max_escape 类型不匹配 → configure 失败 → guard 重试 → 撞 already declared。
+    auto d = [&](const std::string& k, auto def) -> decltype(def) {
+      const std::string full = name + "." + k;
+      if (node_->has_parameter(full)) {
+        return node_->get_parameter(full).get_value<decltype(def)>();
+      }
+      return node_->declare_parameter(full, def);
+    };
     p_max_range_ = d("max_corridor_range", 2.5);
     p_shrink_ = d("corridor_shrink", 0.0);
     p_order_ = d("min_snap_order", 6);

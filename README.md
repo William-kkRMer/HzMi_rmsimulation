@@ -403,32 +403,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 ## 本仓与上游的关系
 
-<<<<<<< HEAD
 > **（待补：上游项目地址与关系说明 —— 作者稍后补充）**
-
-<!--
-  写作提示（可删）：
-  · 上游仓库网址（找到后贴这里）
-  · 本仓在上游基础上改了什么、保留了哪些包
-  · 哪些包来自上游、哪些是本仓新增
-  之前那一版表格（定位/规划/控制/障碍/启动/文档逐层对照）已被作者判定"几乎都不对"，
-  所以整段撤掉，等准确信息再写。
--->
-=======
-本仓是 [SMBU-POLARBEAR / HzMi_rmsimulation](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation)（下文"上游"）的**二次开发分支**：
-
-| 层 | 上游 | 本仓（2026-11） |
-|---|---|---|
-| 定位 | FAST-LIO / Point-LIO + AMCL / slam_toolbox / ICP | **zlio**（`rm_zlio_bridge`）+ 可选 UWB |
-| 规划 | nav2 自带（NavFn / Smac / DWB / RPP / TEB / MPPI） | **T-DT planner**（`rm_tdt_planner`）· 可选 BIT MINCO |
-| 控制 | 同上 | **T-DT local controller**（`rm_tdt_local_controller`） |
-| 障碍 | 2D 雷达 / STVL | patchwork → STVL → costmap → `/plan_mask` 桥 |
-| 启动 | `start_sentinel.sh` + `mode:=mapping/slam_nav/nav` | **`run_sim.sh` + `MODE=tdt|bit|std`** |
-| 文档 | 100+ 份散落 | **9 份合并**（见上表）|
-
-上游的**仿真资产（世界/机器人/雷达插件）、nav2 参数骨架、Docker 环境**仍直接沿用；
-上表的"本仓"列是这次改造的部分。**上游的历史与致谢保留在本文件下半部分**。
->>>>>>> 26b3efa7 (leave the closing words blank for the author and explain where this repo came from)
 
 ## 推送说明（重要）
 

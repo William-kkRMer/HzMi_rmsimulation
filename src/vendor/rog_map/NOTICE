@@ -1,0 +1,35 @@
+本目录是第三方代码，非本仓库原创。
+
+来源: https://github.com/Walker152/navi_minco_bit  (src/perception/rog_map)
+上游: ROG-Map, HKU MARS (维护者 Yunfan Ren, renyf@connect.hku.hk)
+      https://github.com/hku-mars/ROG-Map
+
+引入: 2026-11-09，未修改源码；如需修改请在此注明。
+
+⚠️ 许可证声明不一致（必须记录）：
+  · package.xml          写的是 <license>BSD</license>
+  · 但 19 个源文件的头部都写着：
+      "ROG-Map is free software: ... under the terms of the
+       GNU Lesser General Public License ... either version 3 of the
+       License, or (at your option) any later version."
+  ⇒ 以文件头的 **LGPL-3.0-or-later** 为准（这是作者本人的声明）。
+  ⇒ 影响：可以链接进我们的进程（LGPL 允许），但对外分发时须提供本目录的
+     源码与修改说明。内部使用不受限。
+
+用途: 3D 概率占据 + ProjectionLayer 语义 + Signed ESDF。
+     本仓库把它作为库链接进 rm_tdt_planner，进程内查询后填充 T-DT 的 a_occ/sfc_map。
+
+---
+
+## 本地修改（2026-11-09）
+
+在 `projection_layer` 中加入**负障碍（drop edge）判断**，这是上游没有的功能
+（BIT 在其开源文档 §13.2 中把"地面支撑/负障碍"列为未来工作）：
+
+- `projection_layer.hpp`：`ProjectionLayerConfig` 增加 `negative_enable` / `negative_drop_threshold`
+- `projection_layer.cpp`：`updateFull()` 末尾增加一遍 8 邻域高度差判据
+  —— 本柱 `occupied_z_min_abs` 比邻柱高出超过阈值 ⇒ 判为 `OCCUPIED`
+- `rog_map_core/config.hpp`：`Config` 增加同名两项（`projection.*` 前缀读取）
+- `rog_map.cpp`：把两项传给 `ProjectionLayerConfig`
+
+修改仅新增逻辑，未删除或改变原有分类；`negative_enable=false` 即回到上游行为。

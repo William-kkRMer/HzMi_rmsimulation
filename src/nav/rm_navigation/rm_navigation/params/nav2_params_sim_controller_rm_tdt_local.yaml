@@ -1,0 +1,138 @@
+controller_server:
+  ros__parameters:
+    use_sim_time: True
+    # ★ 2026-09-26：20.0 → 30.0 —— MPPI 的硬约束：model_dt 必须 == 1/controller_frequency
+    #   （见下方 FollowPath.model_dt）。RPP/DWB/TEB 用 20.0 时没有这个约束。
+    controller_frequency: 30.0
+    min_x_velocity_threshold: 0.001
+    # ★ 2026-09-26：0.5 → 0.001 —— RPP 不产生 vy 所以 0.5 无害；MPPI(Omni) 会产生，
+    #   而 nav2_controller 的 getThresholdedTwist() 会把 |vy| < 阈值的**里程计反馈**抹成 0
+    #   ⇒ 侧移反馈恒 0（车表现为"只会前后 + 转向"）。
+    min_y_velocity_threshold: 0.001
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"] 
+    controller_plugins: ["FollowPath"]
+    
+    # Progress checker parameters
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+    
+    # Goal checker parameters
+    # ★ 2026-10-05：SimpleGoalChecker → PositionGoalChecker —— 全向车（mecanum）**没有"车头"概念**
+    #   ⇒ 终点只约束位置；这同时消除了"位置到了但朝向过不了 → progress checker 判失败 → 反复恢复 → ABORT"这一失败模式。
+    #   键名已核实（已装 nav2 1.1.20）：该插件只声明 xy_goal_tolerance / stateful
+    #   （share/nav2_controller/plugins.xml + libposition_goal_checker.so 的编译期字面量）；
+    #   yaw_goal_tolerance / path_length_tolerance 在 1.1.20 的 PositionGoalChecker 里**不存在** ⇒ 删掉/不写（写了是静默失效）。
+    # ★ 2026-10-31：PositionGoalChecker（1.1.20）实测把**任何**目标都判成"到达"
+    #   （目标 (1.5,0) 距车 1.5 m、容差 0.25，仍 0.03 s 内 Reached）⇒ 换成成熟实现
+    #   SimpleGoalChecker（nav2 默认，xy/yaw 双容差，stateful=False 不锁存）。
+    # ★ 2026-10-31：nav2 自带的 PositionGoalChecker/SimpleGoalChecker 都会**瞬间到达**
+    #   （根因：controller_server::isGoalReached 丢弃 transformPose 的返回值 ⇒ goal 退化成 (0,0)）。
+    #   换成自研插件 rm_goal_checker::PlanGoalChecker：直接取 /plan 末点当目标，
+    #   并用 tf2::TimePointZero（最新变换）比较 ⇒ 不受时间戳问题影响。
+    general_goal_checker:
+      stateful: False
+      plugin: "rm_goal_checker::PlanGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 3.15      # 哨兵允许倒着到点：朝向不作为硬条件（3.15 rad ≈ 180°）
+    
+    # 局部规划器变体：MPPI（nav:=mppi，A/B 对照专用）
+    #   本文件 = nav2_params_sim_rpp.yaml 的副本，**除 controller_server 段外逐字节相同**
+    #   （diff -u 只有 2 个 hunk，全部落在 controller_server 内）⇒ A/B 是单变量。
+    #   键只写 nav2 **1.1.20** 真正声明的（三重核实，方法同 §H 的 Smac2D）：
+    #     ① strings /opt/ros/humble/lib/libmppi_controller.so 与 libmppi_critics.so 的编译期字面量；
+    #     ② third_party/nav2/nav2_mppi_controller/src/{optimizer,controller,path_handler,
+    #        noise_generator,trajectory_visualizer,critic_manager}.cpp + src/critics/*.cpp 的 getParam；
+    #     ③ /opt/ros/humble/share/nav2_mppi_controller/{mppic.xml,critics.xml} 的插件类名。
+    # ★ 2026-11-06：自研走廊约束 MPC（rm_mpc_controller/MpcController）
+    #   与 MPPI 同一个 controller_server 槽位，A/B 只需 nav:=rm_mpc / nav:=mppi。
+    #   参考=全局路径按弧长推进；走廊=参考点 ±corridor_half_width 的方形（软约束）。
+    FollowPath:
+      plugin: "rm_tdt_local_controller/TdtLocalController"
+      # ★ 2026-11-06：T-DT 局部规划即控制器（全局 A* + 局部 Kastar 4 m）
+      # 局部目标 = 路径上前方 4 m 的点（T-DT doc/Astar.md 的推荐值："例如 4 m"）
+      # 注意：Kastar 的轨迹**终点速度恒为 0**，所以它会规划成"到 4 m 处停车"。
+      # 这不是错——重规划会让车一直追这个前进的停车点；
+      # 我们要做的是**别去读加速段的速度**（已在跟踪逻辑里改成取窗口最大值）。
+      # ★★★ 2026-11-13（**实测**）：4.0 → 2.0。
+      #   实测路径长 均 5.41 m、36% 短于 2 m；lookahead=4.0 会把参考点钉在轨迹末端，
+      #   而 T-DT 轨迹末端速度≈0 ⇒ 命令速度被压到 0.2 m/s 以下（62% 的周期）。
+      #   配合控制器里"参考点最多取到末端前 0.35 m"的护栏。回退：改回 4.0。
+      lookahead: 2.0
+      min_local_goal: 1.0
+      max_vel: 3.0
+      max_acc: 4.0
+      max_w: 3.0
+      k_theta: 2.0
+      # ★★ 2026-11-10（关键）：**全向底盘不做朝向伺服**
+      #   0 = 不控制车头朝向（w 恒 0，纯平移）。
+      #   之前 k_theta=2.0 把车头强行对准路径切线 ⇒ w 长期 ±3 饱和
+      #   ⇒ 车一边原地打转一边平移 ⇒ 螺旋轨迹 ⇒ 点云畸变 ⇒ 定位降级 → LOST。
+      #   想"车头大致朝行进方向"再设 0.3~0.8。
+      heading_gain: 0.0
+      # 跟踪器（用 T-DT 的 vx/vy 前馈）先关，以 Kastar 为主控制
+      # ★★ 2026-11-10：**分工**（依据实测数据 + T-DT doc/Astar.md 的"前端/后端职责"）
+      #   速度 ← /plan 的 MinSnap 轨迹（按 maxSpeed=3.0 优化，是**巡航曲线**）
+      #          Kastar 的轨迹**终点速度恒为 0**，"从 0.3 加速再减到 0" 4.6 m
+      #          实测峰值 1.6~2.1、平均只有 0.6 ⇒ 它做不了速度源。
+      #   避障 ← Kastar 仍作为兜底（Kastar 跟踪失败时 fallback 会用到）
+      #   朝向 ← 不控制（heading_gain=0，全向底盘）
+      use_plan_track: true
+      lat_blend:  0.60
+      # ★★★ 2026-11-13：**自适应前视**（对齐 T-DT 的 use_velocity_scaled_lookahead_dist）。
+      #   La = clamp(v_lookahead × 当前速度, lookahead_min, lookahead_max)
+      #   · v_lookahead 1.5 s   · 下限 1.0 m（静止也看 1 m，起步不呆）· 上限 3.0 m
+      #   仍会被 `0.5 × 剩余路径长度` 封顶（短路径不会指到终点）。
+      v_lookahead: 1.5
+      lookahead_min: 1.0
+      lookahead_max: 3.0
+      stop_decel: 2.5
+      max_nodes: 150000
+      sample_time: 0.01
+      goal_tol: 0.15
+      use_kastar: true
+      # ★★★ 2026-11-12：**Kastar 主导近场（回到 T-DT 原版结构）**。
+      #   原版 doc/Astar.md「混合搜索」：全局 Astar/JPS 搜通路 → 取**前方 4 m**的点
+      #   作为 Kastar 的局部目标 → Kastar 解近场（带动力学约束）。
+      #   之前我们把它降级成"没有轨迹时才用的兜底"，与原版不符。
+      #   true  ⇒ 每周期都让 Kastar 在当前滑窗内解到前方 lookahead 处，
+      #           其轨迹同时给**近场几何 + 速度前馈**。
+      #   false ⇒ 只在跟踪失败时兜底（旧行为）。
+      #   ⚠ 代价：Kastar 末端速度恒为 0（原版设计），靠"不断追前方 4 m 停车点"巡航
+      #     ⇒ 平均速度低于 MinSnap 巡航（历史实测峰值 1.6~2.1、平均 ~0.6 m/s）。
+      #     代码已用"取未来 0.5 s 窗口内最大速度"缓解。
+      kastar_local: true
+      # ★★★ 2026-11-12：**局部搜索用滑窗**。
+      #   `use_full_map: false` ⇒ 走 buildLocalGrid(px,py)（controller.cpp:553），
+      #   以机器人位置为中心开一个 (2*grid_window)^2 的窗口，随车滑动。
+      #   之前是 `use_full_map: true`（默认）⇒ 每周期重建**整张** 564x317 栅格，
+      #   既是全图、也没有"滑动窗口"的语义。
+      #   grid_window 取 6.0 ⇒ 12 x 12 m 窗口（本图 28 x 15.7 m，确实是局部）。
+      #   ⚠ K-star 的角色**仍是局部规划器/兜底**，不是速度源：
+      #     它的轨迹终点速度恒为 0，实测平均只有 0.6 m/s（见下方说明），
+      #     速度仍由 /plan 的 MinSnap 轨迹给。想让它主控需要另改代码。
+      #   回退：use_full_map: true。
+      use_full_map: false
+      # ★★★ 2026-11-12（**收紧到 T-DT 的真实需求**）：6.0 → 5.0。
+      #   T-DT 的局部目标 = 路径上前方 `lookahead` 处（默认 4.0 m，见 doc/Astar.md
+      #   「例如 4 m」）⇒ K-star 真正要搜的只有车前 ~4 m；
+      #   半径 6 m 的盒子有一半（6 m 后向）是**纯浪费**。
+      #   5.0 m 半径 = 10x10 m 盒：
+      #     · 前向 5 m ≥ lookahead 4 m + 绕行余量 1 m
+      #     · 相对 6 m 盒子，栅格数 57,600 → 40,000（-31%）
+      #     · K-star 的状态空间是 x·y·vx·vy 的乘积 ⇒ 格数直接乘进搜索量
+      #     · 且与"local_costmap 10x10 m"方案**尺寸严格对齐**（同一块区域，
+      #       不会出现"K-star 想搜的地方局部图没有"）
+      #   不能再小到 4.0（=8x8 m）：那样前向刚好等于 lookahead，
+      #   遇到要绕行的障碍时目标/绕行点会贴边被裁掉，K-star 会直接失败。
+      grid_window: 5.0
+      # ★★ 2026-11-10：Kastar 是**局部规划器**（T-DT doc/Astar.md），不是控制器。
+      #   之前 30 Hz 重解 ⇒ 离散采样搜索每次给出"不同但合法"的轨迹 ⇒ 车身震颤。
+      #   现在只在下列情况重解，其余时间跟踪缓存轨迹：
+      kastar_replan_dt: 0.5      # 缓存有效期（s）
+      kastar_dev: 0.30           # 偏离缓存轨迹超过此值（m）
+      kastar_goal_move: 0.50     # 局部目标移动超过此值（m）

@@ -1,0 +1,18 @@
+/icp_registration:
+  ros__parameters:
+    use_sim_time: false 
+    rough_leaf_size: 0.4
+    refine_leaf_size: 0.1
+    pcd_path: ""
+    map_frame_id: "map"
+    odom_frame_id: "odom"
+    # T5: 用标准 odom 帧（原 "lidar_odom" 依赖已删除的静态桥，导致 ICP lookup 失败、map→odom 从未发布）
+    # 数学上：T_map←odom = T_map←livox(ICP 结果) · T_livox←odom(由 TF 链提供)
+    range_odom_frame_id: "odom"
+    laser_frame_id: "livox_frame"
+    pointcloud_topic: "/livox/lidar/pointcloud"
+    thresh: 0.1
+    xy_offset: 0.2
+    yaw_offset: 30.0
+    yaw_resolution: 10.0
+    initial_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] # x,y,z,roll,pitch,yaw

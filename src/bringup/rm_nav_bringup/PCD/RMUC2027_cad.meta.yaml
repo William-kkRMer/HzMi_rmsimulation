@@ -1,0 +1,22 @@
+name: RMUC2027_cad
+kind: pcd
+world: RMUC2027
+# ★ 2026-11-04：这份 PCD 是从**场地 CAD 网格**（RMUC2027.stl）按面积均匀采样出来的，
+#   不是扫描图。用途只有两个：
+#     ① GICP 的 target（先验）—— 几何精确、无漂移；
+#     ② C2C 距离的 ground truth —— 注意它含场地施工误差（几 cm）。
+#   ⚠️ 不要用 pcd_quality.py 评价它（"双层比例 97%" 是正常的：CAD 里本来就有地面/底面/台沿多层）。
+#   ⚠️ 不要拿它建 SC（Scan Context）数据库（SC 要扫出来的采样模式）。
+created_at: '2026-11-04T16:05:00+08:00'
+updated_at: '2026-11-04T16:05:00+08:00'
+source:
+  mesh: src/simulation/rm_simulation/hzmi_rm_simulation/world/RMUC2027_world/meshes/RMUC2027.stl
+  tool: tools/scripts/diag/mesh_to_pcd.py
+  args: --points 4000000 --voxel 0.03 --zmin -0.30 --zmax 2.80
+  triangles: 378666
+  points: 1356637
+spawn_pose:
+  x: 5.9
+  y: 2.72
+  z: 0.157
+  yaw: 0.0

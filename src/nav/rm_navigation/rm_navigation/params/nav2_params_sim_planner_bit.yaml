@@ -1,0 +1,58 @@
+# BIT(minco_planner) —— planner_server 槽位（nav2 全局规划插件）
+#
+# 来源：third_party/... 不对，是 `src/vendor/vendor_navi_bit/minco_planner`（vendor 进来的 BIT 导航栈）。
+# 插件类：`minco_planner/MincoPlanner`（global_planner_plugin.xml）
+#
+# ★ 状态：**实验档**（2026-11-13 新建）。与 T-DT 档并列，用 `mode:=bit` 启用。
+#   已知前提：
+#     · BIT 的规划结果**不是只发 nav_msgs/Path**，它同时给 MPC 发自定义轨迹消息（/opt_path）
+#       ⇒ 控制器也要用 BIT 的 minco_controller，否则 nav2 这条链只有离散路径、没有前馈；
+#     · `planner_mode` 用 PRIORMAP（基于 nav2 全局代价图），EXPLORATION 依赖 ROGMap（本栈未启用）。
+# 参数名来自源码里 declare 的集合：planner_mode / use_smac / tolerance / allow_unknown /
+#   max_iterations / w_data / w_smooth / do_refinement / refinement_num / global_frame / odom_topic
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0
+    use_sim_time: True
+    planner_plugins: ["GridBased"]
+    GridBased:
+      plugin: "minco_planner/MincoPlanner"
+      planner_mode: "PRIORMAP"      # PRIORMAP=用先验图/代价图；EXPLORATION 需要 ROGMap（未启用）
+      use_smac: true                # 用 SMAC 做初步搜索（false = 用 A*）
+      tolerance: 0.3                # 终点容差 m
+      allow_unknown: true
+      max_iterations: 3             # 优化迭代上限（越小越快、越不平滑）
+      w_smooth: 1.0                 # 平滑项权重
+      w_data: 1.0                   # 数据项权重
+      do_refinement: true           # 轨迹细化
+      refinement_num: 2
+      global_frame: "map"
+      odom_topic: "/localization/odometry"   # ★ 我们栈的里程计（BIT 默认是 /aft_mapped_to_init）
+
+      # ★★★ 2026-11-13（**查源码确认的**）：**BIT 的 planner 自己在进程内建了一个 ROGMap**：
+      #   `MincoPlanner::configureRogMap()` → `make_shared<rog_map::ROGMapROS>(node, cfg, tf_)`
+      #   ⇒ 它自己订阅点云/里程计、自己跑更新定时器、自己提供 ESDF 查询。
+      #   **不需要另外启动 rog_map 节点**（`src/vendor/rog_map/src/rog_map_ros/rog_map_ros1.cpp` 是空的也不影响）。
+      #   参数前缀 = `<插件名>.rog_map.` ⇒ 这里就是 `GridBased.rog_map.*`。
+      #   键名来自 `rog_map/include/rog_map/rog_map_core/config.hpp` 的 load("...")。
+      #   ⚠️ 不给这段的话全走默认值（cloud=/cloud_registered_full、odom=/lidar_slam/odom、
+      #      esdf 关、无先验图）⇒ ROGMap 拿不到数据 ⇒ 规划必失败。
+      rog_map:
+        ros_callback:
+          enable: true
+          cloud_topic: "/localization/lio_world_cloud"   # 我们栈配准后的世界系点云
+          odom_topic: "/localization/odometry"
+          update_period_ms: 100
+        esdf:
+          enable: true
+          resolution: 0.05
+        projection:
+          enable: true
+          unknown_as_occupied: false     # ★ 上次 rogmap 踩坑点：true 会把大片空地判成障碍
+          prior_map:
+            enable: true                 # 用先验栅格图打底（就是我们 P 过的那张）
+            # ★ 2026-11-13：这里留空 = 不读先验图（ROGMap 只用实时点云建图）。
+            #   想用先验图打底，填**本机**绝对路径，例如：
+            #   yaml_path: "/你的仓库/src/bringup/rm_nav_bringup/map/RMUC2027_cad.yaml"
+            yaml_path: ""
+            frame_id: "map"

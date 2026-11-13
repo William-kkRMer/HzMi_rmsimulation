@@ -1,0 +1,37 @@
+# =============================================================================
+# ros_gz_bridge_native.yaml —— `gz_sensor:=native` 专用桥表（默认**不加载**）
+# =============================================================================
+# 只在没有第三方 `libmid360_system.so` 时用：把 gz 原生
+#   <sensor type="gpu_lidar"> → /gz/lidar  (ignition.msgs.PointCloudPacked)
+#   <sensor type="imu">      → /livox/imu  (ignition.msgs.IMU)
+# 桥成 ROS，再用 `cloud_accumulator/pc2_to_custom` 转成 `livox_ros_driver2/CustomMsg`
+# 并喂到 `/livox/lidar` —— 整栈其余部分完全不变。
+#
+# ⚠️ 两条已知代价（见 docs/fortress_sim_backend.md 5.6）：
+#   ① 规则网格，没有 mid360.csv 的非重复扫描图案；
+#   ② 点云 header.frame_id 是 gz scoped name ⇒ `pc2_to_custom` 要用
+#      `-p frame_id:=livox_frame` 覆盖回来（launch 已设）。
+# =============================================================================
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "ignition.msgs.Clock"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/cmd_vel_chassis"
+  gz_topic_name: "/cmd_vel_chassis"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "ignition.msgs.Twist"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/gz/lidar/points"
+  gz_topic_name: "/gz/lidar/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "ignition.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/livox/imu"
+  gz_topic_name: "/livox/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "ignition.msgs.IMU"
+  direction: GZ_TO_ROS

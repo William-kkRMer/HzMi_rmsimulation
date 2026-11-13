@@ -1,0 +1,58 @@
+/**:
+  ros__parameters:
+    # ★ 2026-09-23（据 docs/research_p2l_scan_stall.md 的源码级考证）：
+    #   target_frame 置空 ⇒ node.cpp L82 的 `if (!target_frame_.empty())` 不成立 ⇒ **根本不创建
+    #   tf2 Buffer / TransformListener / MessageFilter**（L94-96 直接 registerCallback），
+    #   输出帧仍是点云自带帧（L149 抄 header.frame_id = livox_frame）⇒ **输出逐字节不变**，
+    #   但整类"tf2 过滤器丢消息/静默排队"的故障被移除。
+    #   （本配置原来 target_frame == 点云 frame，过滤器本来短路放行，所以这是加固不是解药。）
+    target_frame: ""
+    transform_tolerance: 0.01
+    # 显式给队列深度：原来没配 ⇒ 默认 std::thread::hardware_concurrency() = 本机 28
+    # （同时作为 MessageFilter 队列与订阅 QoS 深度）⇒ 最多少排 28 帧 0.2MB 的旧数据。
+    queue_size: 5
+    # ★★ 2026-10-07（缺陷 ②）：max_height 0.1 → **1.0**。
+    #   p2l 的 z 过滤发生在**点云自带帧**（本配置 target_frame: "" ⇒ 不做 TF ⇒ 就是 livox_frame），
+    #   而 livox 装在 base_link+0.175、雷达系地面在 z = −0.226 m（config/segmentation_sim.yaml 实测值）
+    #   ⇒ 高度带的**离地**换算 = z_filter + 0.226 m：
+    #      旧值   min_height −1.0 / max_height 0.1 ⇒ 离地 [−0.774, **+0.326**] m
+    #      新值   min_height −1.0 / max_height 1.0 ⇒ 离地 [−0.774, **+1.226**] m
+    #   实测后果（docs/path_clearance_and_contact.md §2.2、docs/ground_segmentation_slots.md §6.2）：
+    #   0.4~1.0 m 高度带的方位覆盖率在旧值下是 **0.0~7.3%**，也就是"墙的 2/3 从来没进过 /scan"。
+    #   ⇒ 代价图/先验图只看得见墙脚那一小段，与"车贴墙/撞进去"的观感一致。
+    #   COD 2026 的配方也是 0.1/1.0（docs/ground_segmentation_slots.md §1.5：他们的 p2l
+    #   min_height 0.01 / max_height 1.00，配 target_frame=chassis —— 那个帧在地面高度附近，
+    #   所以他们那组数**是离地**的；我们不做 TF，同样的 1.0 是"离雷达 1.0 m = 离地 1.226 m"）。
+    #   ⚠ min_height 保持 −1.0 **不动**：它的语义是"雷达下方 1.0 m 以内的点也要"，
+    #   在离地换算里等于 −0.774 m —— 比本场地最低几何（坑底 −0.2 m）更低 ⇒ 不丢任何东西。
+    #   本场地**没有天花板/悬挑/限高杆**（docs/worlds.md §6："隧道 / 设计坡道：没有"），
+    #   所以把上界抬到 1.226 m 不会引入"头顶结构投影到地面"的假障碍；
+    #   真机/别的场地若有悬挑，必须改回窄带或改用带净空层的方案（回退见
+    #   docs/ground_segmentation_slots.md §11 回退表）。
+    min_height: -1.0
+    max_height: 1.0
+    angle_min: -3.14159   # -M_PI/2
+    angle_max: 3.14159    # M_PI/2
+    angle_increment: 0.0043   # M_PI/360.0
+    scan_time: 0.1            # 与仿真插件/MID360 的 10Hz 一致（p2l 内部 time_increment 恒为 0）
+    # ⚠️ range_min 决定"盲区"：小于它的点被**丢弃**（不是标为障碍），且该角度 bin 保持 inf、
+    # 下游 inf_is_valid=true 会把它当"10m 处有回波"→ 沿射线清成 free。
+    # 原 0.45 的理由是"避开 38cm 的地面最近点"，但 p2l 的输入已经是 linefit 去地面后的
+    # /segmentation/obstacle，这个理由不成立；0.45 会让贴身 45cm 内既看不见又被擦成空。
+    # 取 0.2：与车体半径(0.20)和 linefit 的 r_min 对齐 —— 盲区缩到车体内部（那里不可能有真障碍）。
+    # ★ 2026-09-26：range_min 0.2 → 0.12。
+    #   实测：车贴墙（车体半径 0.2m、雷达在车中心附近）时，墙的回波落进 range_min 以内被**丢弃**
+    #   （该角度 bin 保持 inf）⇒ /scan 那个方位没有端点 ⇒ 在线图/代价图出现"缝" ⇒ 规划从缝里穿过去撞墙。
+    #   判据：贴墙时该方位 inf；后退 ~30cm 后该方位出现回波。
+    #   风险：可能扫到自身轮子/护板 ⇒ 若出现"贴着自己的幽灵障碍"（RViz 里车身一圈近点、车动不了），回调到 0.15 或改回 0.2。
+    #   传感器自身 min_range=0.1（mid360.xacro 的 laser_min_range），所以 0.12 在能力范围内。
+    # ★ 2026-09-26（第二次）：0.12 → 0.05。等于**关掉 p2l 的近距盲区** ——
+    #   传感器自身 min_range=0.1（mid360.xacro），所以 <0.1 的值等价于"不过滤"。
+    #   目的：判定"贴墙没回波"到底是不是 p2l 的 range_min 造成的。
+    #   判据：若贴墙时该方位**仍然没有回波** ⇒ 与 range_min 无关，缺在更上游
+    #   （原始点云/插件/仿真几何）—— 参见 cloud_z_profile 的 0-0.5m 桶几乎为空这个事实。
+    #   风险：车身自身回波可能进入 ⇒ 若 RViz 里车身一圈近点、车动不了 ⇒ 回调 0.15/0.2。
+    range_min: 0.05
+    range_max: 10.0
+    use_inf: true
+    inf_epsilon: 1.0

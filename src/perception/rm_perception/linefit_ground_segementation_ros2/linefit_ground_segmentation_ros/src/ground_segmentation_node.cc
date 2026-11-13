@@ -1,0 +1,228 @@
+#include <memory>
+
+#include <geometry_msgs/msg/transform_stamped.hpp>
+#include <pcl/common/transforms.h>
+#include <pcl/io/ply_io.h>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_cloud.h>
+#include <rclcpp/qos.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+
+#include "ground_segmentation/ground_segmentation.h"
+
+// ★ 2026-10-07（缺陷 ③）：地面分割之后的**坡度/台阶判定**。与 ground:=patchwork 槽位、
+//   以及离线出先验图的 tools/scripts/mapping/pcd_to_nav2_map.py 共用同一份阈值文件
+//   src/rm_nav_bringup/config/traversability_criteria.yaml（由 launch 作为参数文件喂进来）。
+//   动机/判据/阈值来源：docs/ground_segmentation_slots.md §10、
+//   docs/path_clearance_and_contact.md §7。回退：traversability_enable:=false。
+#include "rm_ground_traversability/traversability_ros.hpp"
+
+class SegmentationNode : public rclcpp::Node {
+public:
+  SegmentationNode(const rclcpp::NodeOptions &node_options);
+  void scanCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr ground_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacle_pub_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_sub_;
+  GroundSegmentationParams params_;
+  std::shared_ptr<GroundSegmentation> segmenter_;
+  std::string gravity_aligned_frame_;
+  std::unique_ptr<rm_ground_traversability::TraversabilityRos> traversability_;
+};
+
+SegmentationNode::SegmentationNode(const rclcpp::NodeOptions &node_options)
+    : Node("ground_segmentation", node_options) {
+  gravity_aligned_frame_ =
+      this->declare_parameter("gravity_aligned_frame", "gravity_aligned");
+
+  params_.visualize = this->declare_parameter("visualize", params_.visualize);
+  params_.n_bins = this->declare_parameter("n_bins", params_.n_bins);
+  params_.n_segments =
+      this->declare_parameter("n_segments", params_.n_segments);
+  params_.max_dist_to_line =
+      this->declare_parameter("max_dist_to_line", params_.max_dist_to_line);
+  params_.max_slope = this->declare_parameter("max_slope", params_.max_slope);
+  params_.min_slope = this->declare_parameter("min_slope", params_.min_slope);
+  params_.long_threshold =
+      this->declare_parameter("long_threshold", params_.long_threshold);
+  params_.max_long_height =
+      this->declare_parameter("max_long_height", params_.max_long_height);
+  params_.max_start_height =
+      this->declare_parameter("max_start_height", params_.max_start_height);
+  params_.sensor_height =
+      this->declare_parameter("sensor_height", params_.sensor_height);
+  params_.line_search_angle =
+      this->declare_parameter("line_search_angle", params_.line_search_angle);
+  params_.n_threads = this->declare_parameter("n_threads", params_.n_threads);
+  // Params that need to be squared.
+  double r_min, r_max, max_fit_error;
+  if (this->get_parameter("r_min", r_min)) {
+    params_.r_min_square = r_min * r_min;
+  }
+  if (this->get_parameter("r_max", r_max)) {
+    params_.r_max_square = r_max * r_max;
+  }
+  if (this->get_parameter("max_fit_error", max_fit_error)) {
+    params_.max_error_square = max_fit_error * max_fit_error;
+  }
+  segmenter_ = std::make_shared<GroundSegmentation>(params_);
+  std::string ground_topic, obstacle_topic, input_topic;
+  ground_topic = this->declare_parameter("ground_output_topic", "ground_cloud");
+  obstacle_topic =
+      this->declare_parameter("obstacle_output_topic", "obstacle_cloud");
+  input_topic = this->declare_parameter("input_topic", "input_cloud");
+  // ★ 2026-09-23（十四次修正）：订阅 QoS 定稿为 **rclcpp::SensorDataQoS()（BEST_EFFORT + keep_last 5）**。
+  //   演进：2026-09-22 曾因"480KB 大消息丢分片 ⇒ 实测只收到 3%（68/2182 帧）"把它改成 RELIABLE，
+  //   投递确实恢复到 100%，但引入了更严重的副作用：**RELIABLE 写者会被跟不上速率的消费者堵住队列**
+  //   （实测 slam_toolbox 2.5 s/帧 → 一直打 "queue is full"；nav 模式下 RViz 渲大点云 / STVL 体素层同理），
+  //   阻塞点落在 Gazebo 的 sensor 回调里 ⇒ `/livox/lidar/pointcloud`→`/segmentation/obstacle`→`/scan`
+  //   **一起停更 180s 且不自恢复**（跑几分钟后突发），local/global costmap 随后全线失效。
+  //   现在两头一起改：**发布端也 BEST_EFFORT（ros2_livox_simulation 插件）+ 消息体已从 0.48MB 降到 0.20MB**
+  //   （只发有效回波）⇒ 写者永不阻塞；丢帧风险靠实测把关（见 docs/debug_fastlio_cartographer.md）。
+  //   判活/验收：`ros2 topic hz /segmentation/obstacle` 期望 ~8Hz(墙钟)≈10Hz(仿真钟)、`/scan` 同步。
+cloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+      input_topic, rclcpp::SensorDataQoS(),
+      std::bind(&SegmentationNode::scanCallback, this, std::placeholders::_1));
+  ground_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      ground_topic, rclcpp::SensorDataQoS());
+  obstacle_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+      obstacle_topic, rclcpp::SensorDataQoS());
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  // ★ 2026-10-07：坡度/台阶判定（参数在 traversability_criteria.yaml，由 launch 传入；
+  //   参数不合法时构造函数直接抛 ⇒ 启动失败而不是"静默不生效"）。
+  traversability_ =
+      std::make_unique<rm_ground_traversability::TraversabilityRos>(this);
+  RCLCPP_INFO(this->get_logger(), "Segmentation node initialized");
+}
+
+void SegmentationNode::scanCallback(
+    const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+  pcl::PointCloud<pcl::PointXYZ> cloud;
+  pcl::fromROSMsg(*msg, cloud);
+  pcl::PointCloud<pcl::PointXYZ> cloud_transformed;
+
+  std::vector<int> labels;
+
+  bool is_original_pc = true;
+  if (!gravity_aligned_frame_.empty()) {
+    geometry_msgs::msg::TransformStamped tf_stamped;
+    try {
+      tf_stamped = tf_buffer_->lookupTransform(
+          gravity_aligned_frame_, msg->header.frame_id, msg->header.stamp);
+      // Remove translation part.
+      tf_stamped.transform.translation.x = 0;
+      tf_stamped.transform.translation.y = 0;
+      tf_stamped.transform.translation.z = 0;
+      // ★★ 2026-10-07（缺陷 ④，本文件唯一一处行为修复）：`Eigen::Affine3d tf;` 的**默认构造
+      //   不清零**（只把仿射矩阵最后一行置成 (0,0,0,1)，3x3 与平移部分是未初始化的栈垃圾）
+      //   ⇒ 紧接着的 tf.rotate(q) 是在垃圾矩阵上叠一个旋转 ⇒ pcl::transformPointCloud()
+      //   把整帧点云塌到 ~1e-310（denormal）⇒ 分割器一条地面线都拟合不出来。回放实测
+      //   （tools/scripts/regress/linefit_replay_probe.py，同一帧、活的节点、无 Gazebo）：
+      //       gravity_aligned_frame=""          ⇒ /segmentation/ground 3969 点/帧（正常）
+      //       gravity_aligned_frame="base_link" ⇒ /segmentation/ground **恒 0 点**，
+      //                                            且 obstacle = 全部点；把输入点云预先转
+      //                                            −30/+30/−60/+60 全都是 0 ⇒ 与"转多少"无关，
+      //                                            只与"走没走这条分支"有关。
+      //   最小 C++ 复现（g++ + Eigen 3.4）：
+      //       Eigen::Affine3d tf; tf.rotate(q); tf * Vector3d(0.1,0.2,0.3)
+      //           → (7.5e-310, 7.5e-310, 7.5e-310)    ← 垃圾
+      //       Eigen::Affine3d::Identity() 起步 → (0.1, 0.323, 0.160)   ← 正确
+      //   影响面：任何"雷达不是重力对齐"的槽位（斜装 / 云台俯仰）都会踩到；`robot:=hzmirm` 的
+      //   `ground_points_per_frame` 恒为 0 里就有一部分是这个 bug（不全是几何），
+      //   见 docs/robot_models.md §11.4（含更正 + 三条独立证据）。
+      //   修法：显式 Identity() 起步（语义 = 原来想写的"平移清零 + 只旋转"，一字不差）。
+      //   对默认路径（gravity_aligned_frame=""）**逐字节无关**：那条分支根本不进这块代码。
+      Eigen::Affine3d tf = Eigen::Affine3d::Identity();
+      tf.translate(Eigen::Vector3d(0, 0, 0));
+      tf.rotate(Eigen::Quaterniond(
+          tf_stamped.transform.rotation.w, tf_stamped.transform.rotation.x,
+          tf_stamped.transform.rotation.y, tf_stamped.transform.rotation.z));
+      // tf::transformMsgToEigen(tf_stamped.transform, tf);
+      pcl::transformPointCloud(cloud, cloud_transformed, tf);
+      is_original_pc = false;
+    } catch (tf2::TransformException &ex) {
+      RCLCPP_WARN(this->get_logger(),
+                  "Failed to transform point cloud into "
+                  "gravity frame: %s",
+                  ex.what());
+    }
+  }
+
+  // Trick to avoid PC copy if we do not transform.
+  const pcl::PointCloud<pcl::PointXYZ> &cloud_proc =
+      is_original_pc ? cloud : cloud_transformed;
+
+  segmenter_->segment(cloud_proc, &labels);
+
+  // ★ 2026-10-07（缺陷 ③）：linefit 把 ≤22° 的坡面/低矮台面整片判成地面删掉 ⇒ 这里再判一次
+  //   "相对局部地面的高差 + 可行驶坡度"。只降级不升级；可行驶坡面保持 free。
+  //   标签是 std::vector<int>（1=ground），与判据的 uint8 掩码互转一次。
+  {
+    std::vector<uint8_t> is_ground(cloud.size(), 0);
+    for (size_t i = 0; i < labels.size() && i < cloud.size(); ++i) {
+      is_ground[i] = (labels[i] == 1) ? 1u : 0u;
+    }
+    traversability_->applyFrame(cloud_proc, &is_ground);
+    // ★★ 2026-10-09：**近地剔除**（`obstacle_near_ground_m`，默认 **0.0 = 关**）。
+    //   为什么必须在这里做、而不是在代价图侧：`/scan` 是**二维平盘**（LaserScan 没有高度），
+    //   nav2 的 `obstacle_layer` 用 `projectLaser`（z 置 0）再搬到代价图帧 ⇒ 每条波束在那个帧里
+    //   的 z **恒等于"那一帧传感器原点的 z"**（实测 948 条波束的 odom z 全在 [0.020, 0.089]）⇒
+    //   `min_obstacle_height` 在那条链路上**根本没有逐点高度可判**。唯一能在"投影成 2D 之前"
+    //   用上高度的地方就是这里（本判据本来就有 dz = z − 局部地面）。
+    //   语义：`dz ≤ obstacle_near_ground_m` 的点 = **贴着地面** ⇒ 改判 ground（这就是"升"，
+    //   所以显式写在这一处，而不是塞进判据类的"只降不升"里）。
+    //   与台阶判据**结构上互斥**：`near_ground_m (0.05) ≤ slope_min_height (0.05) <
+    //   step_height_threshold (0.15)` ⇒ "被判成台阶/边沿的点"永远不可能被剔掉。
+    //   关掉时（默认）`nearGroundEnabled()` 为假 ⇒ 下面整个循环不执行，行为逐字节不变。
+    if (traversability_->nearGroundEnabled()) {
+      const std::vector<uint8_t> & near_ground = traversability_->nearGroundFlags();
+      for (size_t i = 0; i < is_ground.size() && i < near_ground.size(); ++i) {
+        if (near_ground[i] != 0u) {
+          is_ground[i] = 1u;   // 贴地 ⇒ ground（这一步是**升**，只在这一处发生）
+        }
+      }
+    }
+    for (size_t i = 0; i < labels.size() && i < is_ground.size(); ++i) {
+      labels[i] = (is_ground[i] != 0u) ? 1 : 0;
+    }
+  }
+
+  pcl::PointCloud<pcl::PointXYZ> ground_cloud, obstacle_cloud;
+  for (size_t i = 0; i < cloud.size(); ++i) {
+    if (labels[i] == 1)
+      ground_cloud.push_back(cloud[i]);
+    else
+      obstacle_cloud.push_back(cloud[i]);
+  }
+  auto ground_msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
+  auto obstacle_msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
+  pcl::toROSMsg(ground_cloud, *ground_msg);
+  pcl::toROSMsg(obstacle_cloud, *obstacle_msg);
+  ground_msg->header = msg->header;
+  obstacle_msg->header = msg->header;
+  ground_pub_->publish(*ground_msg);
+  obstacle_pub_->publish(*obstacle_msg);
+  // 诊断：判据命中的点（obstacle 的子集）+ 每帧统计（私有话题，不参与 /segmentation/* 契约）
+  // 注意：点用**原始点**（与 ground/obstacle 两朵云同源、同序），header 才是 msg 的 header。
+  traversability_->publishStepEdge(cloud, msg->header);
+  traversability_->publishStats();
+  // ★ 2026-10-07：前瞻限速（缺陷 ③ 后半段）。**必须在 applyFrame() 之后**：它复用同一帧的
+  //   粗格缓存（局部地面 / 台阶连续量），不重算判据。只发 nav2 SpeedLimit，不产生 /cmd_vel。
+  traversability_->updateSpeedLimit(msg->header);
+}
+
+int main(int argc, char **argv) {
+  rclcpp::init(argc, argv);
+  rclcpp::NodeOptions options;
+  auto node = std::make_shared<SegmentationNode>(options);
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  return 0;
+}

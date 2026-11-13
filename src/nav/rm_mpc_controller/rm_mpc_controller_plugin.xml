@@ -1,0 +1,7 @@
+<library path="rm_mpc_controller">
+  <class name="rm_mpc_controller/MpcController"
+         type="rm_mpc_controller::MpcController"
+         base_class_type="nav2_core::Controller">
+    <description>走廊约束 MPC（OSQP）：跟随路径 + 走廊软约束，输出底盘速度。</description>
+  </class>
+</library>

@@ -1,0 +1,9 @@
+name: RMUC2027_cad_coarse
+kind: pcd
+world: RMUC2027
+source:
+  mesh: src/simulation/rm_simulation/hzmi_rm_simulation/world/RMUC2027_world/meshes/RMUC2027.stl
+  tool: tools/scripts/diag/mesh_to_pcd.py
+  args: --points 4000000 --voxel 0.05
+  triangles: 378666
+  points: 536447

@@ -1,0 +1,229 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
+
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, SetEnvironmentVariable
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import LoadComposableNodes, Node
+from launch_ros.descriptions import ComposableNode, ParameterFile
+from nav2_common.launch import RewrittenYaml
+
+
+def generate_launch_description():
+    # Get the launch directory
+    bringup_dir = get_package_share_directory('nav2_bringup')
+
+    namespace = LaunchConfiguration('namespace')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    autostart = LaunchConfiguration('autostart')
+    params_file = LaunchConfiguration('params_file')
+    # ★ 2026-10-05 params 分层（见 docs/cod_nav_2026_migration_worksheet.md §J）：
+    #   params_file = 公共段（base，amcl/map_server 段都在这里）；
+    #   params_file_planner / params_file_controller = 槽位文件（planner_server / controller_server 段），
+    #   三份按 base → planner → controller 顺序给节点（ROS 2 按参数逐键叠加，后写覆盖）。
+    #   独立使用本 launch 且只给 params_file 时，两个槽位默认 = params_file（重复叠加同一份文件幂等）。
+    params_files = [params_file,
+                    LaunchConfiguration('params_file_planner'),
+                    LaunchConfiguration('params_file_controller')]
+    map_yaml_file = LaunchConfiguration('map')
+    use_composition = LaunchConfiguration('use_composition')
+    container_name = LaunchConfiguration('container_name')
+    container_name_full = (namespace, '/', container_name)
+    use_respawn = LaunchConfiguration('use_respawn')
+    log_level = LaunchConfiguration('log_level')
+    initial_pose_x = LaunchConfiguration('initial_pose_x')
+    initial_pose_y = LaunchConfiguration('initial_pose_y')
+    initial_pose_z = LaunchConfiguration('initial_pose_z')
+    initial_pose_yaw = LaunchConfiguration('initial_pose_yaw')
+
+    # 关键：map_server 与 amcl 必须由【同一个】lifecycle_manager 管理，
+    # 否则会出现两个同名 lifecycle_manager_localization 冲突 → map_server 无法激活 → amcl 永远 Waiting for map
+    lifecycle_nodes = ['map_server', 'amcl']
+
+    remappings = [('/tf', 'tf'),
+                  ('/tf_static', 'tf_static')]
+
+    # Create our own temporary YAML files that include substitutions
+    # 注意：RewrittenYaml 对 param_rewrites 会先做「叶子名」匹配，再做「全路径」匹配；
+    # 这里用全路径，避免 'x'/'y' 这类短名误伤全局同名叶子参数。
+    param_substitutions = {
+        'use_sim_time': use_sim_time,
+        'yaml_filename': map_yaml_file,
+        'amcl.ros__parameters.initial_pose.x': initial_pose_x,
+        'amcl.ros__parameters.initial_pose.y': initial_pose_y,
+        'amcl.ros__parameters.initial_pose.z': initial_pose_z,
+        'amcl.ros__parameters.initial_pose.yaw': initial_pose_yaw}
+
+    # 每份文件各套一层同样的 RewrittenYaml + ParameterFile（rewrite 对三份都生效）
+    configured_params = [
+        ParameterFile(
+            RewrittenYaml(
+                source_file=f,
+                root_key=namespace,
+                param_rewrites=param_substitutions,
+                convert_types=True),
+            allow_substs=True)
+        for f in params_files]
+
+    stdout_linebuf_envvar = SetEnvironmentVariable(
+        'RCUTILS_LOGGING_BUFFERED_STREAM', '1')
+
+    declare_namespace_cmd = DeclareLaunchArgument(
+        'namespace',
+        default_value='',
+        description='Top-level namespace')
+
+    declare_use_sim_time_cmd = DeclareLaunchArgument(
+        'use_sim_time',
+        default_value='false',
+        description='Use simulation (Gazebo) clock if true')
+
+    declare_params_file_cmd = DeclareLaunchArgument(
+        'params_file',
+        default_value=os.path.join(bringup_dir, 'params', 'nav2_params.yaml'),
+        description='Full path to the ROS2 parameters file to use for all launched nodes')
+
+    # ★ 2026-10-05 params 分层：另两份槽位文件（默认 = params_file ⇒ 单文件用法行为不变）
+    declare_params_file_planner_cmd = DeclareLaunchArgument(
+        'params_file_planner',
+        default_value=params_file,
+        description='第二份参数文件（planner 槽：planner_server 段）；默认 = params_file')
+
+    declare_params_file_controller_cmd = DeclareLaunchArgument(
+        'params_file_controller',
+        default_value=params_file,
+        description='第三份参数文件（controller 槽：controller_server 段）；默认 = params_file')
+
+    declare_autostart_cmd = DeclareLaunchArgument(
+        'autostart', default_value='true',
+        description='Automatically startup the nav2 stack')
+
+    declare_use_composition_cmd = DeclareLaunchArgument(
+        'use_composition', default_value='False',
+        description='Use composed bringup if True')
+
+    declare_container_name_cmd = DeclareLaunchArgument(
+        'container_name', default_value='nav2_container',
+        description='the name of conatiner that nodes will load in if use composition')
+
+    declare_use_respawn_cmd = DeclareLaunchArgument(
+        'use_respawn', default_value='False',
+        description='Whether to respawn if a node crashes. Applied when composition is disabled.')
+
+    declare_log_level_cmd = DeclareLaunchArgument(
+        'log_level', default_value='info',
+        description='log level')
+
+    declare_map_yaml_cmd = DeclareLaunchArgument(
+        'map',
+        default_value='',
+        description='用于 map_server 的栅格地图 yaml 路径（由 bringup 传入）')
+
+    # AMCL 初值（map 系）。sim 里出生点固定，故由 bringup 按 world 自动传入；
+    # 运行中仍可用 /initialpose 或 RViz 的 2D Pose Estimate 覆盖。
+    declare_initial_pose_x_cmd = DeclareLaunchArgument(
+        'initial_pose_x', default_value='0.0',
+        description='AMCL 初始位姿 x（map 系，米）')
+    declare_initial_pose_y_cmd = DeclareLaunchArgument(
+        'initial_pose_y', default_value='0.0',
+        description='AMCL 初始位姿 y（map 系，米）')
+    declare_initial_pose_z_cmd = DeclareLaunchArgument(
+        'initial_pose_z', default_value='0.0',
+        description='AMCL 初始位姿 z（map 系，米）')
+    declare_initial_pose_yaw_cmd = DeclareLaunchArgument(
+        'initial_pose_yaw', default_value='0.0',
+        description='AMCL 初始位姿 yaw（map 系，弧度）')
+
+    load_nodes = GroupAction(
+        condition=IfCondition(PythonExpression(['not ', use_composition])),
+        actions=[
+            Node(
+                package='nav2_map_server',
+                executable='map_server',
+                name='map_server',
+                output='screen',
+                respawn=use_respawn,
+                respawn_delay=2.0,
+                parameters=[*configured_params],
+                arguments=['--ros-args', '--log-level', log_level],
+                remappings=remappings),
+            Node(
+                package='nav2_amcl',
+                executable='amcl',
+                name='amcl',
+                output='screen',
+                respawn=use_respawn,
+                respawn_delay=2.0,
+                parameters=[*configured_params],
+                arguments=['--ros-args', '--log-level', log_level],
+                remappings=remappings),
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='lifecycle_manager_localization',
+                output='screen',
+                arguments=['--ros-args', '--log-level', log_level],
+                parameters=[{'use_sim_time': use_sim_time},
+                            {'autostart': autostart},
+                            {'node_names': lifecycle_nodes}])
+        ]
+    )
+
+    load_composable_nodes = LoadComposableNodes(
+        condition=IfCondition(use_composition),
+        target_container=container_name_full,
+        composable_node_descriptions=[
+            ComposableNode(
+                package='nav2_map_server',
+                plugin='nav2_map_server::MapServer',
+                name='map_server',
+                parameters=[*configured_params],
+                remappings=remappings),
+            ComposableNode(
+                package='nav2_amcl',
+                plugin='nav2_amcl::AmclNode',
+                name='amcl',
+                parameters=[*configured_params],
+                remappings=remappings),
+            ComposableNode(
+                package='nav2_lifecycle_manager',
+                plugin='nav2_lifecycle_manager::LifecycleManager',
+                name='lifecycle_manager_localization',
+                parameters=[{'use_sim_time': use_sim_time,
+                             'autostart': autostart,
+                             'node_names': lifecycle_nodes}]),
+        ],
+    )
+
+    # Create the launch description and populate
+    ld = LaunchDescription()
+
+    # Set environment variables
+    ld.add_action(stdout_linebuf_envvar)
+
+    # Declare the launch options
+    ld.add_action(declare_namespace_cmd)
+    ld.add_action(declare_use_sim_time_cmd)
+    ld.add_action(declare_params_file_cmd)
+    # 槽位文件入参必须在 params_file 之后声明（默认值引用 LaunchConfiguration('params_file')）
+    ld.add_action(declare_params_file_planner_cmd)
+    ld.add_action(declare_params_file_controller_cmd)
+    ld.add_action(declare_autostart_cmd)
+    ld.add_action(declare_use_composition_cmd)
+    ld.add_action(declare_container_name_cmd)
+    ld.add_action(declare_use_respawn_cmd)
+    ld.add_action(declare_log_level_cmd)
+    ld.add_action(declare_map_yaml_cmd)
+    ld.add_action(declare_initial_pose_x_cmd)
+    ld.add_action(declare_initial_pose_y_cmd)
+    ld.add_action(declare_initial_pose_z_cmd)
+    ld.add_action(declare_initial_pose_yaw_cmd)
+
+    # Add the actions to launch all of the localiztion nodes
+    ld.add_action(load_nodes)
+    ld.add_action(load_composable_nodes)
+
+    return ld

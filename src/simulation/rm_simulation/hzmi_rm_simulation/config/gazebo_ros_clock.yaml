@@ -1,0 +1,7 @@
+# ★ 2026-11-01：把 /clock 发布频率从默认 10Hz 提到 100Hz。
+#   根因见 gazebo_ros_init.cpp：DEFAULT_PUBLISH_FREQUENCY=10.0，参数名 publish_rate。
+#   10Hz 仿真钟在 RTF~0.47 下只剩 ~5Hz 墙钟 → 每个节点 now() 粒度 0.2s → GUI 高负载下
+#   各时间源错开 → map→odom TF 戳滞后/冻住 → 「Transform data too old」→ 定位/导航卡死。
+/gazebo:
+  ros__parameters:
+    publish_rate: 100.0

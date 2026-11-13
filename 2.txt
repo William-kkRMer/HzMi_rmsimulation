@@ -1,0 +1,199 @@
+# ============================================================================
+# T-DT / z-localization 建图 + 定位：已验证可用的完整流程
+# 版本：2026-11-08（端到端验证：定位误差 1~3 cm，状态 NORMAL）
+#
+# 关键点（与旧命令的差异，别改回去）：
+#   1) 前端 IMU 必须用 /livox/imu_level（先跑 imu_prep），不是 /livox/imu
+#   2) 前端队列必须 8192 / 2000000（开成 200000 会让后验落后 5 s ⇒ 位姿漂几十米）
+#   3) 世界物理：max_step_size 0.001 + real_time_update_rate 250（已提交）
+#   4) 后端配置：uwb 关、body 外参单位阵（已提交）
+#   5) 终端 A 要 export LIVOX_INTRA_FRAME_TIME=1（逐点帧内时间；扫描时间基已修好，见 §26）
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# 第 0 步：每个终端都执行（四个终端环境必须一致）
+# ----------------------------------------------------------------------------
+cd /home/weicheng/HzMi_rmsimulation
+source install/setup.bash
+source .tmp_cache/zlio_ws/install/setup.bash
+export ROS_DOMAIN_ID=0
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+
+# ----------------------------------------------------------------------------
+# 终端 A：仿真（关 slam_toolbox、关 Gazebo GUI）
+# ----------------------------------------------------------------------------
+export LIVOX_INTRA_FRAME_TIME=1     # ★ 必须：逐点帧内时间（运动时才不会跳）
+ros2 launch rm_nav_bringup bringup_sim.launch.py \
+  sim_backend:=classic world:=RMUC2027 map_name:=RMUC2027_v2 mode:=mapping \
+  mapper:=none lio:=small_point_lio ground:=linefit robot:=chassis spin_speed:=0.0 gui:=False
+
+# 验收（另开终端）：
+#   timeout 8 ros2 topic hz /livox/lidar     # 期望 ~2 Hz（RTF≈0.2）
+#   ros2 topic info /cmd_vel                 # Subscription count: 1
+
+
+# ----------------------------------------------------------------------------
+# 终端 B0：IMU 预处理（新增，必须有）
+#   作用：前 2 s 估计重力方向 → 旋到水平系；补协方差；按需补空隙
+#   日志应打印： 标定完成 samples=200 平均比力=(-0.00 -0.03 1.00) 倾角=1.49°
+# ----------------------------------------------------------------------------
+ros2 run rm_zlio_bridge imu_prep --ros-args -p align_gravity:=true -p use_sim_time:=true
+
+
+# ----------------------------------------------------------------------------
+# 终端 B：zlio 前端
+#   ★ imu_topic 必须是 /livox/imu_level
+#   ★ 队列必须是 8192 / 2000000
+# ----------------------------------------------------------------------------
+CFG=$(ros2 pkg prefix frontend)/share/frontend/config/lio.yaml
+ros2 run frontend zlio_node --ros-args -p config_file:=$CFG -p input_type:=livox \
+  -p lidar_topic:=/livox/lidar -p imu_topic:=/livox/imu_level -p imu_acceleration_scale:=1.0 \
+  -p use_sim_time:=true -p reset_mode:=warm -p coordinated_reset:=true \
+  -p maximum_queue_events:=8192 -p maximum_buffered_points:=2000000 \
+  -p maximum_imu_interval:=0.5 -p imu_history_seconds:=600.0
+
+# 验收：
+#   timeout 6 ros2 topic hz /frontend/odometry     # 期望 20~40 Hz
+
+
+# ----------------------------------------------------------------------------
+# 终端 C：后端（建图）
+# ----------------------------------------------------------------------------
+ros2 launch backend backend.launch.py mode:=mapping use_sim_time:=true rviz:=false \
+  config_file:=$PWD/tools/configs/zlio_backend_mapping_save.yaml
+
+# 验收：日志出现
+#   first synchronized front-end frame: stamp=..., points=..., covariance=valid
+
+
+# ----------------------------------------------------------------------------
+# 终端 D：键盘开车（慢速跑全场，最后回起点附近）
+# ----------------------------------------------------------------------------
+export TELEOP_TOPIC=/cmd_vel
+tools/scripts/control/improved_teleop.sh
+
+
+# ----------------------------------------------------------------------------
+# 终端 E：RViz（可选，看 zlio 的 3D 点云）
+#   若刷 "No transform from [base_link] to [map]"：把 RobotModel / TF 取消勾选
+# ----------------------------------------------------------------------------
+rviz2 -d tools/configs/zlio.rviz --ros-args -p use_sim_time:=true
+
+
+# ----------------------------------------------------------------------------
+# 第 5 步：保存地图 + 补描述子
+# ----------------------------------------------------------------------------
+tools/scripts/zlio/zlio_status.sh       # 期望 runtime_map 有 width（几千～几万）
+tools/scripts/zlio/zlio_save.sh         # 期望 success=True
+
+# save_map 不写 sc_descriptors.bin，必须用他们的工具补：
+.tmp_cache/zlio_ws/install/backend/lib/backend/rebuild_scan_context_descriptors \
+  --bundle $PWD/.tmp_cache/prior/runtime_map --lidar-height 0.35
+
+# 验收（应有 4 项：keyframes.txt clouds map.pcd sc_descriptors.bin）：
+ls $PWD/.tmp_cache/prior/runtime_map
+
+# 看关键帧数与覆盖范围（全场期望：200~600 帧，跨度 20 m 以上）：
+python3 -c "
+import numpy as np
+rows=[l.split() for l in open('.tmp_cache/prior/runtime_map/keyframes.txt') if not l.startswith('#')]
+tx=np.array([float(r[2]) for r in rows]); ty=np.array([float(r[3]) for r in rows])
+print(f'关键帧 {len(rows)}; 跨度 {tx.max()-tx.min():.1f} x {ty.max()-ty.min():.1f} m')"
+
+
+# ----------------------------------------------------------------------------
+# 第 6 步：验证定位（终端 C 换成 localization 模式；A / B0 / B 不用重启）
+# ----------------------------------------------------------------------------
+# 先在终端 C 按 Ctrl-C 停掉建图后端，然后：
+ros2 launch backend backend.launch.py mode:=localization use_sim_time:=true rviz:=false \
+  prior_map:=$PWD/.tmp_cache/prior/runtime_map \
+  config_file:=$PWD/tools/configs/zlio_backend_mapping_save.yaml
+
+# 另一个终端看位姿（带超时，避免卡住）：
+timeout 8 ros2 topic echo /backend_node/localization_pose --field pose.pose.position --once
+
+# 期望：
+#   - 日志 localization state -> NORMAL (recovered via Scan Context + scan-to-map ...)
+#   - 位姿 ≈ zlio 帧原点（不是几十米）
+
+
+# ----------------------------------------------------------------------------
+# 第 7 步（可选）：把先验转成 2D 栅格图（当你想用"先验同源图"时）
+#   ★ 默认**不需要**这步：新旧两张图实测是对齐的（ICP 中位 4.7 cm）。
+#   用先验的 map.pcd 投影出一张同源同帧的图（原点 = 建图起点）。
+# ----------------------------------------------------------------------------
+/usr/bin/python3 tools/pcd_to_grid_map.py   --pcd .tmp_cache/prior/runtime_map/map.pcd   --out .tmp_cache/prior/runtime_map/grid
+# 产物：grid.pgm + grid.yaml（origin 在 zlio 帧里，出生点 = (0,0)）
+
+# ★ 实测结论：**默认用旧的手画图 RMUC2027_v2.pgm**（更规整），
+#   它和 zlio 先验在几何上是对齐的（ICP: t=(0.00,-0.02) yaw=0.01°，中位点距 4.7 cm），
+#   所以帧偏移 = (0, 0)。之前写 (5.9, 2.72) 是错的（会让机器人整体偏 6 m ⇒ 全局/局部对不上）。
+#
+#   想改用"先验投影图"就跑上面这条命令，然后：
+#     ros2 launch ... map_yaml:=.tmp_cache/prior/runtime_map/grid.yaml
+
+
+# ============================================================================
+# 导航（整套已接好：仿真 + nav2 + zlio 定位，一个 launch 全起）
+# ----------------------------------------------------------------------------
+# 终端 1（唯一需要起的终端；RViz 由 launch 自动带出）
+ros2 launch rm_nav_bringup bringup_zlio.launch.py gui:=true
+#   gui:=true  显示 Gazebo
+#   nav_rviz:=False  不想起 RViz
+#
+# 启动顺序（自动）：仿真 ~5 s → nav2 ~20 s → zlio 栈 60 s → 定位 NORMAL ~100 s
+# ⚠️ 一定要等到 NORMAL 再发目标，否则路径会偏
+
+# 终端 2：确认
+timeout 8 ros2 topic echo /backend_node/localization_state --once     # 期望 NORMAL
+ros2 action list | grep navigate_to_pose                             # 期望 /navigate_to_pose
+timeout 8 ros2 run tf2_ros tf2_echo map base_link --ros-args -p use_sim_time:=true   # 位姿
+
+# 终端 2：挑目标点（坐标 = map 帧 = RViz 里 /map 的坐标）
+python3 tools/scripts/nav/tdt_goal.py --list
+python3 tools/scripts/nav/tdt_goal.py  2.0 -2.5                        # 只检查 clearance
+python3 tools/scripts/nav/tdt_goal.py  2.0 -2.5 --send --timeout 400   # 发送
+
+# 实测：目标 (2.0,-2.5) -> SUCCEEDED 用时 26.4 s，终点 (1.823, -2.322)，误差 0.26 m
+
+# 或者用 RViz：工具栏选 **Nav2 Goal**（不是 2D Goal Pose），在地图上按住拖方向
+#   ⚠️ 若 RViz 报 "navigate_to_pose action server is not available"：
+#      说明 nav2 还没激活，等 20~30 s 再点；仍不行就重启 launch
+
+
+# ============================================================================
+# 异常速查
+# ----------------------------------------------------------------------------
+# queue capacity exceeded        → 前端处理不过来：确认物理是 1 ms/250、gui:=False
+# runtime_map 无 width           → 先开车 30 s；再 zlio_status.sh
+# save_map 失败                  → 地图为空（frames.empty()），先确认 width>0
+# 定位位姿几十米                 → 队列是否被改大？imu_topic 是否用 imu_level？
+# RViz 刷 TF 错                  → 关掉 RobotModel / TF 显示
+# 前端反复 accepting epoch N     → 看是否出现 watermark / queue 相关警告
+# ============================================================================
+
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch rm_nav_bringup bringup_zlio.launch.py gui:=true gravity:=base mask_impl:=rogmap
+
+# 只看感知（排查 ROGMap / 限高杆 / 局部消失）
+ros2 launch rm_nav_bringup bringup_zlio.launch.py gui:=true gravity:=base mask_impl:=rogmap stage_test:=l0
+
+# 只看控制（排查停不住 / 方向）
+... stage_test:=l3
+
+# 组合
+... stage_test:=l0,l1
+
+# 完全安静
+... stage_test:=none
+
+# 改打印周期
+... stage_period:=5.0
+
+GZ_CORES=0-7 GZCLIENT_CORES=8-11 ./tools/scripts/run_sim.sh
+
+# 一条命令：地图 + UWB 一起开
+UWB=1 MAP_YAML=$PWD/.tmp_diag/gridmap/cad_v3_edit.yaml ./tools/scripts/run_sim.sh

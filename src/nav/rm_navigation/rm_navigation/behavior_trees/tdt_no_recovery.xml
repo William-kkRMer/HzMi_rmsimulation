@@ -1,0 +1,41 @@
+<!--
+  T-DT 专用行为树：**移除全部 nav2 恢复动作**。
+
+  为什么（2026-11-12 决定，方案 B）：
+
+    原树 tdt_replan_10hz.xml 里挂着
+        Spin(1.57) / BackUp(0.30 m) / Wait(5 s) / ClearEntireCostmap ×4
+    这些节点一旦被触发，就必然去读 `local_costmap` 做碰撞检查
+    ⇒ 为了让"恢复"能工作，我们必须一直维护一张 local_costmap，
+      哪怕 T-DT 的规划器/控制器**根本不读 costmap**。
+
+    而 T-DT 规划器**自带恢复 FSM**（`recovery_enable` / `stuck_time 2.0`
+    / `escape_dist 1.5`，判据是自己的栅格 + `/plan_mask`），
+    日志形如：
+        [tdt][恢复] 触发(T1无进度) ⇒ 逃逸方向 0°, 可用长度 1.50 m (尝试 1/3)
+
+    ⇒ 本树只保留"周期性重规划 + 跟踪"，
+      恢复交给 T-DT 内部，costmap 彻底退出导航回路。
+
+  ⚠ 代价（必须知道）：T-DT 的 ESCAPE 失败时会**原地停车**
+    （日志 `[tdt][恢复] FAILED（停车）`）。删掉 Spin/BackUp 后，
+    **没有"退一步再试"的兜底**了。
+    回退：把 nav2_params_sim_base.yaml 的 `default_nav_to_pose_bt_xml`
+    指回 `tdt_replan_10hz.xml` 即可。
+
+  结构说明：
+    - PipelineSequence：先算路径，再跟踪；前者有新结果就重算
+    - RateController 10 Hz：与原来一致（T-DT 规划器 10 Hz 重算）
+    - 外层不再套 RecoveryNode ⇒ 任一步失败就整条树返回 FAILURE，
+      BT 由 nav2 的 navigator 处理（会重新下发 goal / 报放弃）
+-->
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="NavigateWithReplanning">
+      <RateController hz="10.0">
+        <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+      </RateController>
+      <FollowPath path="{path}" controller_id="FollowPath"/>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>

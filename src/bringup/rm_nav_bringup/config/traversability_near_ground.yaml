@@ -1,0 +1,29 @@
+# =============================================================================
+# traversability_near_ground.yaml —— 「近地剔除」的**默认（关闭）**参数文件
+# （2026-10-09 新增；**增量**文件，只含一个键）
+#
+# 谁读它：`bringup_sim.launch.py` 的 `_RobotSlotFile`（机制与 `traversability_self_mask.yaml`
+#   同款）。**默认槽位（= 不带 robot:= 的现行模型）/ hzmirm / 任何未登记的槽位都读这一份**
+#   ⇒ `obstacle_near_ground_m: 0.0` = **关**，与引入本键之前的行为**逐字节相同**
+#   （`TraversabilityRos::applyFrame()` 里 `nearGroundEnabled()` 为假 ⇒ 连掩码都不填）。
+#   只有 `robot:=robot11` 走
+#   `src/bringup/rm_nav_bringup/config/traversability_near_ground_robot11.yaml`（0.05）。
+#
+# 这个键是什么 / 为什么需要 / 为什么是 0.05：见
+#   `traversability_near_ground_robot11.yaml` 的文件头（那里有实测数字与"台阶仍然安全"的
+#   构造性论证），以及 docs/tilted_lidar_fidelity.md §K。
+#
+# 回退：本文件的值改回 0.0 即"没有这一级"；或去掉 launch 里这一路参数。
+# =============================================================================
+ground_segmentation:
+  ros__parameters:
+    # 离局部地面高度 ≤ 该值（m）的点不算障碍。**0.0 = 关（默认）**。
+    # ★★ 2026-11-03：0.0（关）→ **0.08**。这是"**相对局部地面**"的那条判据，也是坡的真解：
+    #   语义（low_terrain_classifier.hpp:70 / classify():811）：
+    #     dz = z − 局部地面 g(x,y)（0.2 m 粗格、各 0.05 m 细格最低点的 p05，**跟着坡走**）
+    #     dz ≤ 0.08 的点 ⇒ 改判成 **ground**（obstacle → ground 的"升级"，只在这一处做）
+    #   为什么它才是坡的解：STVL / p2l 的高度带是**绝对 z**（离地 0~18 cm），坡面一边爬一边穿过这条带，
+    #   永远会被当成"贴着地面的障碍"。而 g(x,y) 是**局部**地面 ⇒ 坡面点 dz≈0 ⇒ 被改判地面 ⇒
+    #   坡不再进 obstacle、不进 /scan、不进代价图。矮物（>8 cm 的墙/坎/立柱）dz 超阈值，仍是障碍。
+    #   回退：0.0（与引入本键之前逐字节相同）。
+    obstacle_near_ground_m: 0.08

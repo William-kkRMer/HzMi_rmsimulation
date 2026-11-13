@@ -1,0 +1,69 @@
+devel/
+build/
+install/
+log/
+
+.vscode/
+.venv/
+.cache/
+__pycache__/
+.catkin_workspace
+*.gv
+*.pdf
+
+mat_pre.txt
+mat_out.txt
+imu.txt
+dbg.txt
+pos_log.txt
+# 第三方参考代码（COD 战队 2026 导航成品，只读参考，不参与构建）
+third_party/cod_nav_2026/
+
+# 临时工作目录（评审遗留的 .tmp_*，包括 Livox 查看器的工作副本）
+.tmp_*/
+
+
+# 无先验全局重定位的离线评估（KISS-Matcher / Scan Context）——第三方源码、构建产物、
+# 评估数据（bag/帧/真值/结果）一律不入库，只把结论写进 docs。
+third_party/kiss_matcher/
+third_party/scan_context/
+third_party/eval/
+third_party/eval_data/
+src/rm_nav_bringup/map/*.bak-*
+
+# 调试产物（各种 .dbg* 目录 / Xvfb 日志）
+#   2026-11-13 清理：删掉了 169 个 .dbg*（214 MB）后，把这些同类散件也一并忽略，
+#   否则 `git status` 每次都会刷出一屏未跟踪文件。
+.dbg*/
+.tmp_cache/
+.tmp_cache_*.urdf
+.tmp_cache_*.sdf
+.tmpgz/
+.tmp3d/
+# gazebo 插件的临时编译工作区（脚本用的是 .tmp_gzlivox2/gzsim_ws，不是这个）
+.gzsim_ws/
+.gzsim_build.log
+
+# 离线 MPC 原型
+tools/mpc_proto/.deps/
+tools/mpc_proto/mpc_proto
+
+# 只读第三方克隆（不入库）
+third_party/tdt-nav-kit/
+third_party/z-localization/
+third_party/prox_mpc/
+
+# 部署包产物（不参与构建）
+dist/
+
+# 诊断日志（测量/回放），不进仓库
+.tmp_diag/
+
+# ★ 2026-11-13：**不要把 rosbag / 大资产提交进 git**（单个 .db3 就 1.1 GB，
+#   GitHub 单文件上限 100 MB ⇒ 推不上去）。
+bag/
+*.db3
+deploy/
+export/
+# gmsh 的 python venv（第三方二进制，不入库）
+third_party/.gmsh/

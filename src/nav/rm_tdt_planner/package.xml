@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rm_tdt_planner</name>
+  <version>0.1.0</version>
+  <description>T-DT 完整规划器（A* + 简化 + 梯形时间 + MinimumSnap）作为 nav2 planner 插件，并发布 TrajectoryPlan</description>
+  <maintainer email="dev@hzmi.local">HzMi</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>rm_plan_msgs</depend>
+  <depend>rm_nav_interfaces</depend>
+  <depend>pluginlib</depend>
+  <depend>eigen</depend>
+  <export><build_type>ament_cmake</build_type></export>
+  <depend>rog_map</depend>
+</package>

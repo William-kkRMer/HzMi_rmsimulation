@@ -1,0 +1,643 @@
+#include <cstdlib>   // ★ 2026-11-03：getenv（逐点时间开关 LIVOX_INTRA_FRAME_TIME）
+#include <gazebo/physics/Model.hh>
+#include <gazebo/physics/MultiRayShape.hh>  // Store the latest laser scans into laserMsg
+#include <gazebo/physics/PhysicsEngine.hh>
+#include <gazebo/physics/World.hh>
+#include <gazebo/sensors/RaySensor.hh>
+#include <gazebo/transport/Node.hh>
+#include <gazebo_ros/node.hpp>
+#include <livox_ros_driver2/msg/custom_msg.hpp>
+#include <livox_ros_driver2/msg/custom_point.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+
+#include "ros2_livox/csv_reader.hpp"
+#include "ros2_livox/livox_points_plugin.h"
+#include "ros2_livox/livox_ode_multiray_shape.h"
+
+namespace gazebo
+{
+
+    GZ_REGISTER_SENSOR_PLUGIN(LivoxPointsPlugin)
+
+    LivoxPointsPlugin::LivoxPointsPlugin() {}
+
+    LivoxPointsPlugin::~LivoxPointsPlugin() {}
+
+    void convertDataToRotateInfo(const std::vector<std::vector<double>> &datas, std::vector<AviaRotateInfo> &avia_infos)
+    {
+        avia_infos.reserve(datas.size());
+        double deg_2_rad = M_PI / 180.0;
+        for (auto &data : datas)
+        {
+            if (data.size() == 3)
+            {
+                avia_infos.emplace_back();
+                avia_infos.back().time = data[0];
+                avia_infos.back().azimuth = data[1] * deg_2_rad;
+                avia_infos.back().zenith = data[2] * deg_2_rad - M_PI_2; //转化成标准的右手系角度
+            } else {
+            RCLCPP_ERROR(rclcpp::get_logger("convertDataToRotateInfo"), "data size is not 3!");
+        }
+        }
+    }
+
+    void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr sdf)
+    {
+        node_ = gazebo_ros::Node::Get(sdf);
+        
+        std::vector<std::vector<double>> datas;
+        std::string file_name = sdf->Get<std::string>("csv_file_name");
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"), "load csv file name: %s", file_name.c_str());
+        if (!CsvReader::ReadCsvFile(file_name, datas))
+        {   
+            RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"), "cannot get csv file! %s will return !", file_name.c_str());
+            return;
+        }
+        sdfPtr = sdf;
+        auto rayElem = sdfPtr->GetElement("ray");
+        auto scanElem = rayElem->GetElement("scan");
+        auto rangeElem = rayElem->GetElement("range");
+
+
+        raySensor = _parent;
+        auto sensor_pose = raySensor->Pose();
+        auto curr_scan_topic = sdf->Get<std::string>("topic");
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"), "ros topic name: %s", curr_scan_topic.c_str());
+
+        child_name = raySensor->Name();
+        parent_name = raySensor->ParentName();
+        size_t delimiter_pos = parent_name.find("::");
+        parent_name = parent_name.substr(delimiter_pos + 2);
+
+        node = transport::NodePtr(new transport::Node());
+        node->Init(raySensor->WorldName());
+        // PointCloud2 publisher
+        // ★★ 2026-09-23：**BEST_EFFORT(KEEP_LAST 5)** —— 传感器数据的惯例 QoS(REP-2009)，
+        //   关键是"写者永不阻塞"：RELIABLE+KEEP_LAST(10) 时，只要有一个消费者跟不上
+        //   （实测 slam_toolbox 2.5 s/帧、RViz 渲染大点云、STVL 体素层），队列满就会
+        //   阻塞 Gazebo 的 sensor 回调 ⇒ /livox/lidar/pointcloud、/segmentation/obstacle、
+        //   /scan 一起停更且不自恢复（跑几分钟后突发）。
+        //   代价：慢消费者会丢帧（但它本来就来不及），快消费者（linefit 1ms/帧）不丢。
+        cloud2_pub = node_->create_publisher<sensor_msgs::msg::PointCloud2>(
+            curr_scan_topic + "/pointcloud", rclcpp::SensorDataQoS());
+        // CustomMsg publisher
+        // ★ 2026-09-24 修复（与上面 cloud2_pub 同一个坑，上一轮只修了那条、漏了这条）：
+        //   原来这里是默认的 RELIABLE + KEEP_LAST(10)。FAST-LIO(mid360/AVIA) 订的正是 CustomMsg，
+        //   两端都 RELIABLE ⇒ 一旦它的回调跟不上，**这一行会在 Gazebo 的 sensor 回调里阻塞**；
+        //   而它在本函数里排在 cloud2_pub->publish() 之前 ⇒ 同一帧的 PointCloud2 永远发不出去，
+        //   且不自恢复。实测：/livox/lidar 与 /livox/lidar/pointcloud 同时无消息，而 /livox/imu
+        //   （另一个插件）99.94 Hz ⇒ 没有 odom 帧 ⇒ costmap 位姿冻在启动那一刻(644.682)
+        //   ⇒ nav2「假到达」、车一步不动。详见 docs/debug_fastlio_cartographer.md §9.2 候选④。
+        //   改 best effort 后写者永不阻塞；FAST-LIO 侧订阅必须同步改 SensorDataQoS()，否则
+        //   BEST_EFFORT 写者 + RELIABLE 读者 = QoS 不兼容，laser_mapping 一条都收不到。
+        custom_pub = node_->create_publisher<livox_ros_driver2::msg::CustomMsg>(
+            curr_scan_topic, rclcpp::SensorDataQoS());
+
+        scanPub = node->Advertise<msgs::LaserScanStamped>(curr_scan_topic+"laserscan", 50);
+
+        aviaInfos.clear();
+        convertDataToRotateInfo(datas, aviaInfos);
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"), "scan info size: %ld", aviaInfos.size());
+        maxPointSize = aviaInfos.size();
+
+        RayPlugin::Load(_parent, sdfPtr);
+        laserMsg.mutable_scan()->set_frame(_parent->ParentName());
+        // parentEntity = world->GetEntity(_parent->ParentName());
+        parentEntity = this->world->EntityByName(_parent->ParentName());
+        //SendRosTf(sensor_pose, raySensor->ParentName(), raySensor->Name());
+        auto physics = world->Physics();
+        laserCollision = physics->CreateCollision("multiray", _parent->ParentName());
+        laserCollision->SetName("ray_sensor_collision");
+        laserCollision->SetRelativePose(_parent->Pose());
+        laserCollision->SetInitialRelativePose(_parent->Pose());
+        rayShape.reset(new gazebo::physics::LivoxOdeMultiRayShape(laserCollision));
+        laserCollision->SetShape(rayShape);
+        samplesStep = sdfPtr->Get<int>("samples");
+        downSample = sdfPtr->Get<int>("downsample");
+        // ★ 2026-10-07 Phase 3：可选安装倾角 `<tilt_rpy>roll pitch yaw</tilt_rpy>`（弧度）。
+        //   缺省（元素不存在）= 单位阵 ⇒ 与以前逐字节相同。
+        mount_rot_ = ignition::math::Quaterniond::Identity;
+        if (sdfPtr->HasElement("tilt_rpy"))
+        {
+            const std::string tilt = sdfPtr->Get<std::string>("tilt_rpy");
+            std::istringstream iss(tilt);
+            double r = 0.0, p = 0.0, y = 0.0;
+            if (iss >> r >> p >> y)
+            {
+                mount_rot_.Euler(ignition::math::Vector3d(r, p, y));
+                RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"),
+                            "tilt_rpy = [%.9f %.9f %.9f] rad（安装倾角：只改射线方向；"
+                            "点云表达在哪个系由 <cloud_frame> 决定，缺省 = 父 link 系）", r, p, y);
+            }
+            else
+            {
+                RCLCPP_WARN(rclcpp::get_logger("LivoxPointsPlugin"),
+                            "tilt_rpy 解析失败（%s）⇒ 按单位阵处理", tilt.c_str());
+            }
+        }
+        if (downSample < 1)
+        {
+            downSample = 1;
+        }
+        // ★★ 2026-10-21（**缺陷③ 收口**）：点云**永远**表达在 `header.frame_id` 那个帧里。
+        //   历史（2026-10-09 引入的可选 SDF 参数 `<cloud_frame>parent|sensor</cloud_frame>`）：
+        //     · 缺省 `parent`：点算在**父 link 系**里（axis = offset.Rot()·mount_rot·ray + offset.Pos()），
+        //       而 `header.frame_id` 一直是 `<sensor name>`（= 本仓 `livox_frame`）⇒ **两者不同系**。
+        //       本仓的 fixed 关节被 sdformat 合并（`gz sdf -p` 实测：模型只剩 base_link、ray 传感器
+        //       `<pose>` = 关节 origin）⇒ 父 link 系 = **base_link 系** ⇒ 整朵云偏了一个安装矢量
+        //       （默认模型 (0.12, 0, 0.175)、robot11 (0.000562, 0.130916, 0.157028) m），
+        //       任何按 frame_id 查 TF 的消费者都会**再叠一次**（双重应用）。
+        //     · `sensor`：点 = range·(mount_rot·ray)，与 frame_id 自洽（2026-10-21 已修好）。
+        //   ⇒ 现在两档**出点公式相同**（parent 档的点被显式换算进传感器系，见 OnNewLaserScans 里的
+        //      代数），`<cloud_frame>` 元素**保留**（老 SDF/URDF 照常加载）但不再改变坐标系。
+        cloud_frame_sensor_ = false;
+        if (sdfPtr->HasElement("cloud_frame"))
+        {
+            const std::string cloud_frame = sdfPtr->Get<std::string>("cloud_frame");
+            if (cloud_frame == "sensor")
+            {
+                cloud_frame_sensor_ = true;
+            }
+            else if (cloud_frame != "parent")
+            {
+                RCLCPP_WARN(rclcpp::get_logger("LivoxPointsPlugin"),
+                            "cloud_frame 取值 %s 不认识（只认 parent | sensor）⇒ 按 parent 处理",
+                            cloud_frame.c_str());
+            }
+            RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"),
+                        "cloud_frame = %s（**历史开关**；自 2026-10-21 起两档等价：点云永远表达在 "
+                        "frame_id = %s 的那个系里，缺陷③）",
+                        cloud_frame_sensor_ ? "sensor" : "parent", raySensor->Name().c_str());
+        }
+        // ★★ 2026-10-09：**点 = range·axis 漏了射线起点**（共享代码修复 + 一个回退开关）。
+        //   缺省（元素不存在）= **修好的语义**：`point = range·axis + minDist·axis`（传感器系）；
+        //   显式写 `false` = 2026-10-09 之前的老行为（`point = range·axis`，逐字节）。
+        //   （2026-10-21 起 `offset.Pos()` 不再出现在出点公式里 —— 它只属于父 link 系，见缺陷③；
+        //     `sensor` 档本来就是不含它的那一档，所以这一档逐字节不变。）
+        //   为什么默认改成"修好的"：老行为让**每一个点**沿自己的射线朝传感器方向内移 `minDist`
+        //   （本仓 `minDist` = 0.1 m）⇒ 地面不再是平面（近处抬高、远处压低，实测 r 0.25–0.35
+        //   → z −0.208、r 2–4 → −0.253，真值 −0.2595）、`sensor_height` 标定偏 0.8 mm~5 cm、
+        //   近场那圈"幽灵地面"还要靠下游掩膜兜。逐模型 A/B（默认模型 / robot11 的点数、地面
+        //   高度、分割、`/scan` 分带、代价图、契约）见 docs/tilted_lidar_fidelity.md §K。
+        range_from_origin_ = true;
+        if (sdfPtr->HasElement("range_from_origin"))
+        {
+            range_from_origin_ = sdfPtr->Get<bool>("range_from_origin");
+        }
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"),
+                    "range_from_origin = %s ⇒ 点 = %s（缺省 = 修好的语义；写 false = 旧行为）",
+                    range_from_origin_ ? "true" : "false",
+                    !range_from_origin_ ? "range·axis（旧行为；坐标系仍 = frame_id）"
+                                        : "range·axis + minDist·axis（传感器系 = frame_id，**不含** offset.Pos()）");
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"), "sample: %ld", samplesStep);
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"), "downsample: %ld", downSample);
+        // 这行日志用于确认加载的是修好时间基的插件（旧库打的是墙钟偏移）
+        RCLCPP_INFO(rclcpp::get_logger("LivoxPointsPlugin"),
+                    "timebase: SIM clock, per-point offset_time = 0 (intra-frame motionless)");
+        rayShape->RayShapes().reserve(samplesStep / downSample);
+        rayShape->Load(sdfPtr);
+        rayShape->Init();
+        minDist = rangeElem->Get<double>("min");
+        maxDist = rangeElem->Get<double>("max");
+        auto offset = laserCollision->RelativePose();
+        ignition::math::Vector3d start_point, end_point;
+        for (int j = 0; j < samplesStep; j += downSample)
+        {
+            int index = j % maxPointSize;
+            auto &rotate_info = aviaInfos[index];
+            ignition::math::Quaterniond ray;
+            ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
+            // ★ 2026-10-07 Phase 3：安装倾角（`<tilt_rpy>`，缺省单位阵）乘在射线方向上
+            auto axis = offset.Rot() * mount_rot_ * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+            start_point = minDist * axis + offset.Pos();
+            end_point = maxDist * axis + offset.Pos();
+            rayShape->AddRay(start_point, end_point);
+        }
+    }
+
+
+
+    void LivoxPointsPlugin::OnNewLaserScans() {
+        // ★ 2026-09-24 现场探针（每 2 秒最多一条）：用于区分
+        //   「Gazebo 根本没调用扫描回调」与「回调调用了但点云发不出去」。
+        //   症状对照：/livox/imu 100Hz、/clock RTF≈1.0，而 /livox/lidar/pointcloud 0Hz 时，
+        //   若本行**完全不出现** ⇒ 卡在 Gazebo 传感器侧（mid360.xacro 没有 <always_on>、
+        //   传感器/模型是否真的生成扫描），与插件发布逻辑无关。
+        {
+            static rclcpp::Clock probe_clock(RCL_STEADY_TIME);
+            static rclcpp::Time last_probe(0, 0, RCL_STEADY_TIME);
+            const rclcpp::Time now_probe = probe_clock.now();
+            if ((now_probe - last_probe).seconds() > 2.0) {
+                last_probe = now_probe;
+                static long probe_count = 0;
+                RCLCPP_DEBUG(rclcpp::get_logger("LivoxPointsPlugin"),
+                    "[probe] OnNewLaserScans 被调用 第%ld次: sensor=%s active=%d update_rate=%.1f",
+                    ++probe_count, raySensor->Name().c_str(),
+                    static_cast<int>(raySensor->IsActive()), raySensor->UpdateRate());
+            }
+        }
+        if (!rayShape) {
+            return; // 检查是否已经初始化了 rayShape
+        }
+
+        std::vector<std::pair<int, AviaRotateInfo>> points_pair;
+        InitializeRays(points_pair, rayShape);
+        rayShape->Update();
+
+        msgs::Set(laserMsg.mutable_time(), world->SimTime());
+        msgs::LaserScan *scan = laserMsg.mutable_scan();
+        InitializeScan(scan);
+
+        // ★ 2026-09-22 修正（关键）：本帧所有点的采样时刻 = 当前仿真时刻。
+        //   Gazebo 的射线传感器是"一次回调把所有射线全部打完"（上面那句 rayShape->Update()），
+        //   一帧之内机器人位姿不变 → 帧内没有任何运动，所有点属于同一个仿真时刻。
+        //   两条消息必须共用同一个戳：原来各调用一次 now()，差一个仿真步都会让 /scan 与 /odom 对不齐。
+        // ★ 2026-11-01 修正（根因）：原来用 node_->get_clock()->now() —— 这个 gazebo_ros 共享节点
+        //   的钟是 RCL_STEADY_TIME（从 gzserver 启动起算的单调钟），**不是仿真钟**。
+        //   ⇒ 点云戳 ≈ 18~20s 且与 /clock（仿真钟，UNIX 纪元）差 ~56 年 ⇒ p2l /scan 戳冻结
+        //   ⇒ AMCL 的 map→odom TF 戳冻结在 20.424 ⇒ TF 链 map→base_link 查不到（extrapolation）
+        //   ⇒ 全局规划器 getRobotPose 失败 ⇒ "Resulting plan has 0 poses" ⇒ 远目标必卡。
+        //   改回用 world->SimTime()（= gazebo_ros_init 发 /clock 的同一时间源 `_info.simTime`）。
+        const auto sim_time = world->SimTime();
+
+        // ★★ 2026-11-08：**扫描时间语义修正**。
+        //   真实 Livox 驱动：`timebase` = 该帧**第一个点**的时刻，逐点 `offset_time ∈ [0, 周期)`；
+        //   `header.stamp` 与 `timebase` 同源（帧开始）。下游用 `timebase + 末点 offset` 得到**扫描结束**。
+        //   我们此前把 timebase 设成"回调时刻"（≈帧结束）并让 offset=0 ⇒ 扫描时长恒为 0；
+        //   若同时打开逐点 offset（旧写法）⇒ 结束时刻 = now + 周期（**未来**）⇒ zlio 判帧非法。
+        //   现在：打开逐点 offset 时，把 timebase/header.stamp 一起**回退一个周期**（= 帧开始），
+        //   于是 `timebase + offset ∈ [start, start+period] = [start, now]` 自洽。
+        static const bool intra_frame_time =
+            (std::getenv("LIVOX_INTRA_FRAME_TIME") != nullptr);
+        const double sensor_rate = raySensor ? raySensor->UpdateRate() : 10.0;
+        const uint64_t period_ns = static_cast<uint64_t>(
+            (sensor_rate > 1e-6 ? 1.0 / sensor_rate : 0.1) * 1e9);
+        const uint64_t now_ns = static_cast<uint64_t>(sim_time.sec) * 1000000000ULL +
+                                static_cast<uint64_t>(sim_time.nsec);
+        const uint64_t base_ns = intra_frame_time && now_ns > period_ns ? now_ns - period_ns : now_ns;
+        const rclcpp::Time stamp(static_cast<int32_t>(base_ns / 1000000000ULL),
+                                 static_cast<uint32_t>(base_ns % 1000000000ULL));
+
+        // 创建自定义消息 pp_livox，用于发布 Livox CustomMsg 类型消息
+        livox_ros_driver2::msg::CustomMsg pp_livox;
+        pp_livox.header.stamp = stamp;
+        pp_livox.header.frame_id = raySensor->Name();
+        // ★ 2026-11-07：补 `timebase`（Livox CustomMsg 必填）。原来只设 header.stamp、
+        //   timebase 留 0 ⇒ 只按 offset_time 推"扫描结束时刻"的下游（z-localization）会算出 0，
+        //   与 IMU 时间差 30 s+ ⇒ 被判 input latency 超限、直接丢弃整帧。
+        //   这里与 header.stamp 同一时间轴（仿真钟，ns）。
+        pp_livox.timebase = base_ns;
+        int count = 0;
+
+        // 用于 PointCloud2 类型消息发布
+        sensor_msgs::msg::PointCloud2 cloud2;
+        cloud2.header.stamp = stamp;
+        cloud2.header.frame_id = raySensor->Name();
+
+        sensor_msgs::PointCloud2Modifier modifier(cloud2);
+        modifier.setPointCloud2FieldsByString(2, "xyz", "rgb");
+
+        // ★★ 2026-09-23（nav 模式排查）：**只发有效回波，不再用 (0,0,0) 占位**。
+        //   实测一帧 30000 个射线方向里只有 ~6200 个真有回波（20.8%），其余 78% 被填成 (0,0,0)
+        //   发出去 ⇒ 消息 480 KB/帧 @10Hz = 4.8 MB/s 灌进 DDS。后果：
+        //     · 任何消费端（linefit / nav2 costmap / RViz）一卡，**RELIABLE + KEEP_LAST(10)**
+        //       的写者就会积压 → 阻塞 Gazebo 的 sensor 回调 → **整条感知链冻死且不自恢复**
+        //       （实测现象：/scan 与 /segmentation/obstacle 同时停更 180 s，而 linefit/p2l 进程还活着）。
+        //     · 真实 Livox 驱动**只发有回波的采样点**，(0,0,0) 本来就不是它发的 ⇒ 这也是保真度修复。
+        //   改法：先数一遍有效回波数，按它 resize，再只填有效点（CustomMsg 同步受益）。
+        size_t valid_points = 0;
+        {
+            for (const auto &pair : points_pair) {
+                const double r = rayShape->GetRange(pair.first);
+                if (r > RangeMin() && r < RangeMax()) ++valid_points;
+            }
+            modifier.resize(valid_points);
+        }
+
+        // ★★ 2026-11-03：**逐点帧内时间戳**（默认关；`export LIVOX_INTRA_FRAME_TIME=1` 打开）。
+        //   为什么：原来 `p.offset_time = 0`（每帧所有点同一时刻）⇒ 下游 LIO **没有去畸变**可言。
+        //   仿真 RTF≈0.69、雷达 6.9 Hz、车速 0.8 m/s 时，一帧内车走了 11~14 cm，点云被"抹开"
+        //   ⇒ 配准精度掉、上坡/转向时最容易一次跳几米（实测 odom 位移差 5 次 >10 cm 跳变）。
+        //   这里按"该帧的仿真周期"线性分摊到各点：offset ∈ [0, period)。
+        //   ⚠️ 线性分摊是**近似**（真实 MID-360 按扫描图案逐点给），但单调、物理上成立；
+        //      与 2026-09-22 那次"用墙钟当帧跨度"的问题**不同**：这里用的是**仿真周期**
+        //      （1/sensor update_rate），不随 CPU 负载抖动。
+        //   回退：不设这个环境变量即可（行为与以前逐字节相同）。
+        sensor_msgs::PointCloud2Iterator<float> out_x(cloud2, "x");
+        sensor_msgs::PointCloud2Iterator<float> out_y(cloud2, "y");
+        sensor_msgs::PointCloud2Iterator<float> out_z(cloud2, "z");
+
+        // ★★ 2026-10-07（Phase 3，robot:=robot11 的"斜装雷达"）：把**安装倾角**乘进点的方向里。
+        //   背景：本插件把点算成 `point = range * axis`，而 axis 原本只是 CSV 采样方向
+        //   （`ray * x̂`），**不含任何安装姿态**。robot11 的雷达按实物斜 30°（用户确认 roll），
+        //   我们**需要**：射线在物理上真的斜（否则下视盲区、地面环半径、点云几何全不对）。
+        //   做法：新增 SDF 参数 `<tilt_rpy>roll pitch yaw</tilt_rpy>`（弧度；缺省 = 单位阵）：
+        //     · 打射线时：axis = offset.Rot() · mount_rot · ray · x̂   （射线真的按倾角偏）
+        //     · 发布点时（2026-10-21 起**两档相同**）：axis = mount_rot · ray · x̂
+        //                （点 = **传感器系** = header.frame_id 声称的那个帧里的命中点）
+        //   实测（robot11）：仰角谱仍是 −7…+52°（传感器自身 FoV），但它在 world 里是斜的：
+        //   地面最近环 0.43 m、下视到 −37°、地面点占 ~20%；而修之前"姿态只加在射线上、
+        //   不加在点上"会让 linefit 只能判 2.8% 地面。
+        const auto sensor_offset = laserCollision ? laserCollision->RelativePose()
+                                                  : ignition::math::Pose3d::Zero;
+        const auto sensor_rot = sensor_offset.Rot();
+
+        // ★★ 2026-10-21（**缺陷③**）：点云与 `header.frame_id` 必须**同系**。
+        //   拍一次收据：这个偏移过去被**双重应用**过（云里加一次、下游按 TF 再加一次）。
+        RCLCPP_INFO_ONCE(rclcpp::get_logger("LivoxPointsPlugin"),
+                         "cloud_frame：点云**永远**表达在 frame_id（= <sensor name>）那个系里；"
+                         "父 link 系的安装偏移 offset.Pos()=[%.6f %.6f %.6f] rpy=[%.6f %.6f %.6f] "
+                         "已在出点公式里换算掉（缺陷③，2026-10-21；两档等价）",
+                         sensor_offset.Pos().X(), sensor_offset.Pos().Y(), sensor_offset.Pos().Z(),
+                         sensor_rot.Euler().X(), sensor_rot.Euler().Y(), sensor_rot.Euler().Z());
+
+        // 遍历射线扫描点对
+        for (const auto &pair : points_pair) {
+            auto range = rayShape->GetRange(pair.first);
+            auto intensity = rayShape->GetRetro(pair.first);
+
+            // 无回波 / 超范围：**整点丢弃**（不再填 (0,0,0)）—— 见上方 2026-09-23 说明
+            if (range <= RangeMin() || range >= RangeMax()) {
+                continue;
+            }
+
+            // 计算点云数据
+            auto rotate_info = pair.second;
+            ignition::math::Quaterniond ray;
+            ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
+            // ★★ 2026-10-21（**缺陷③**：`parent` 档的镜像问题）：
+            //   2026-10-09~10-20 期间这里有一条按 `<cloud_frame>` 分叉的式子：
+            //       `parent` 档 ⇒ axis = sensor_rot·mount_rot·ray（**父 link 系**方向），
+            //                     出点再 `+ sensor_offset.Pos()` ⇒ 点确实在父 link 系里，
+            //       但 `header.frame_id` 一直是 `<sensor name>`（= `livox_frame`）⇒ **不同系**。
+            //   本仓的 fixed 关节被 sdformat 合并（`gz sdf -p` 实测：ray 传感器 parent = base_link、
+            //   `<pose>` = 关节 origin）⇒ 父 link 系 = **base_link 系** ⇒ 整朵云比自称的帧多一个
+            //   安装矢量（默认模型 (0.12, 0, 0.175) m、robot11 (0.000562, 0.130916, 0.157028) m），
+            //   下游按 frame_id 查 TF（LIO 的 extrinsic、linefit 的 gravity_aligned_frame、
+            //   p2l 的 target_frame、nav2 costmap、cloud_accumulator）⇒ **再叠一次**。
+            //   修法（不新增开关）：把 `parent` 档的点**换算进传感器系**。代数（一行）：
+            //       p_parent = (range+minDist)·(sensor_rot·mount_rot·ray) + offset.Pos()
+            //       p_sensor = sensor_rotᵀ·(p_parent − offset.Pos())
+            //                = (range+minDist)·(mount_rot·ray)        ← 与 `sensor` 档同一条式子
+            //   ⇒ 两档出点**逐字节相同**，且都等于 `header.frame_id` 声称的那个帧；
+            //     世界里的射线方向**不变**（RayShape 仍用 offset.Rot()·mount_rot·ray 生成，
+            //     见 InitializeRays / Load）。
+            //   ⚠️ 结果：`offset.Pos()` 不再出现在出点公式里（它只属于父 link 系）；
+            //      `sensor` 档本来就不含它 ⇒ **那一档逐字节不变**（回归基线）。
+            auto axis = mount_rot_ * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+            // ★★ 2026-10-09（**共享代码改动**，见文件头/§K）：`range` 是**从射线起点**量的距离。
+            //   射线起点在 `InitializeRays()` 里是 `minDist·axis + offset.Pos()`（父 link 系）：
+            //     · `minDist` = SDF `<range><min>`（本仓所有模型 = **0.1 m**）
+            //     · `offset.Pos()` = 传感器在父 link 里的位置（本仓 `livox_frame` = (0.00056, 0.1309, 0.1570)）
+            //   命中点在父 link 系里是 `range·axis_parent + minDist·axis_parent + offset.Pos()`；
+            //   换算进传感器系（= 上面的 p_sensor 代数）后只剩 `(range+minDist)·axis`。
+            //   ⇒ 老代码只发 `range·axis`（漏了 `minDist·axis`）⇒ 每个点沿自己的射线**朝传感器
+            //     方向内移 0.1 m**。实测（robot11，独立于本行）：地面点 z 随距离单调变化 ——
+            //     r 0.25–0.35 → −0.208、r 2–4 → −0.253，而真值 −0.2595；正是"沿射线内移 0.1 m"
+            //     应有的样子（docs/robot_models.md §12.3.1 / 本插件 §K 的 A/B）。
+            //   ⚠️ 这是**共享代码**：所有模型都走这一行 ⇒ 逐模型 A/B 见 §K；
+            //      回退 = SDF `<range_from_origin>false</range_from_origin>`（老行为）。
+            auto point = range_from_origin_ ? (range * axis + minDist * axis)
+                                            : (range * axis);
+
+            // 填充 CustomMsg 点云消息
+            livox_ros_driver2::msg::CustomPoint p;
+            p.x = point.X();
+            p.y = point.Y();
+            p.z = point.Z();
+            p.reflectivity = intensity;
+
+            // 填充 PointCloud2 点云消息
+            *out_x = point.X();
+            *out_y = point.Y();
+            *out_z = point.Z();
+
+            ++out_x;
+            ++out_y;
+            ++out_z;
+
+            // ★ 2026-09-22 修正（关键）：逐点时间偏移必须与 header 戳同一条时间轴（**仿真钟**）。
+            //   原来这里用 boost::chrono::high_resolution_clock（**墙钟**）累计"生成一帧花了多久"，
+            //   而 header 戳是仿真钟 → 两个时间基准混用。下游 FAST-LIO 的用法（laserMapping.cpp:396-410）：
+            //       lidar_end_time = header 戳 + 末点 offset      // 再用于 odom.header.stamp (:632)
+            //   => /odom 的时间戳 = 仿真戳 + 一帧墙钟耗时：RTF<1 时是 1.3~3 倍（本机 RTF≈0.76），
+            //      且逐帧随 CPU 负载抖动；同时 FAST-LIO 拿这个假跨度做去畸变，
+            //      把"其实根本没发生"的帧内运动补偿掉 → 转起来时整帧被拧、odom 位姿带负载相关偏差。
+            //   cartographer 侧的表现：偶发 Check failed: timed_pose_queue_... → exit -6(SIGABRT)，
+            //      以及开 use_odometry 时先验按错时刻套用 → 地图跟着车转（详见 docs/issues_and_findings.md）。
+            //   仿真里帧内无运动，正确值就是 0（FAST-LIO 于是得到 lidar_end_time == header 戳，自洽）。
+            //   若将来真要建帧内运动模型，应使用 scan_mode/mid360.csv 的 Time 列（单位需先确认），
+            //   而不是墙钟。
+            if (intra_frame_time && valid_points > 1) {
+                p.offset_time = static_cast<uint32_t>(
+                    static_cast<uint64_t>(count) * period_ns /
+                    static_cast<uint64_t>(valid_points));
+            } else {
+                p.offset_time = 0;
+            }
+
+            // 将点云数据添加到 CustomMsg 消息中
+            pp_livox.points.push_back(p);
+            count++;
+        }
+
+        if (scanPub && scanPub->HasConnections()) {
+            scanPub->Publish(laserMsg);
+        }
+
+        // 发布 CustomMsg 消息
+        pp_livox.point_num = count;
+        custom_pub->publish(pp_livox);
+
+        // 发布 PointCloud2 类型消息
+        cloud2_pub->publish(cloud2);
+    }
+
+
+    void LivoxPointsPlugin::InitializeRays(std::vector<std::pair<int, AviaRotateInfo>> &points_pair,
+                                           boost::shared_ptr<physics::LivoxOdeMultiRayShape> &ray_shape)
+    {
+        auto &rays = ray_shape->RayShapes();
+        ignition::math::Vector3d start_point, end_point;
+        ignition::math::Quaterniond ray;
+        auto offset = laserCollision->RelativePose();
+        int64_t end_index = currStartIndex + samplesStep;
+        long unsigned int ray_index = 0;
+        auto ray_size = rays.size();
+        points_pair.reserve(rays.size());
+        for (int k = currStartIndex; k < end_index; k += downSample)
+        {
+            auto index = k % maxPointSize;
+            auto &rotate_info = aviaInfos[index];
+            ray.Euler(ignition::math::Vector3d(0.0, rotate_info.zenith, rotate_info.azimuth));
+            // ★ 2026-10-07 Phase 3：安装倾角（`<tilt_rpy>`，缺省单位阵）乘在射线方向上
+            auto axis = offset.Rot() * mount_rot_ * ray * ignition::math::Vector3d(1.0, 0.0, 0.0);
+            start_point = minDist * axis + offset.Pos();
+            end_point = maxDist * axis + offset.Pos();
+            if (ray_index < ray_size)
+            {
+                rays[ray_index]->SetPoints(start_point, end_point);
+                points_pair.emplace_back(ray_index, rotate_info);
+            }
+            ray_index++;
+        }
+        currStartIndex += samplesStep;
+    }
+
+    void LivoxPointsPlugin::InitializeScan(msgs::LaserScan *&scan)
+    {
+        // Store the latest laser scans into laserMsg
+        msgs::Set(scan->mutable_world_pose(), raySensor->Pose() + parentEntity->WorldPose());
+        scan->set_angle_min(AngleMin().Radian());
+        scan->set_angle_max(AngleMax().Radian());
+        scan->set_angle_step(AngleResolution());
+        scan->set_count(RangeCount());
+
+        scan->set_vertical_angle_min(VerticalAngleMin().Radian());
+        scan->set_vertical_angle_max(VerticalAngleMax().Radian());
+        scan->set_vertical_angle_step(VerticalAngleResolution());
+        scan->set_vertical_count(VerticalRangeCount());
+
+        scan->set_range_min(RangeMin());
+        scan->set_range_max(RangeMax());
+
+        scan->clear_ranges();
+        scan->clear_intensities();
+
+        unsigned int rangeCount = RangeCount();
+        unsigned int verticalRangeCount = VerticalRangeCount();
+
+        for (unsigned int j = 0; j < verticalRangeCount; ++j)
+        {
+            for (unsigned int i = 0; i < rangeCount; ++i)
+            {
+                scan->add_ranges(0);
+                scan->add_intensities(0);
+            }
+        }
+    }
+
+    ignition::math::Angle LivoxPointsPlugin::AngleMin() const
+    {
+        if (rayShape)
+            return rayShape->MinAngle();
+        else
+            return -1;
+    }
+
+    ignition::math::Angle LivoxPointsPlugin::AngleMax() const
+    {
+        if (rayShape)
+        {
+            return ignition::math::Angle(rayShape->MaxAngle().Radian());
+        }
+        else
+            return -1;
+    }
+
+    double LivoxPointsPlugin::GetRangeMin() const { return RangeMin(); }
+
+    double LivoxPointsPlugin::RangeMin() const
+    {
+        if (rayShape)
+            return rayShape->GetMinRange();
+        else
+            return -1;
+    }
+
+    double LivoxPointsPlugin::GetRangeMax() const { return RangeMax(); }
+
+    double LivoxPointsPlugin::RangeMax() const
+    {
+        if (rayShape)
+            return rayShape->GetMaxRange();
+        else
+            return -1;
+    }
+
+    double LivoxPointsPlugin::GetAngleResolution() const { return AngleResolution(); }
+
+    double LivoxPointsPlugin::AngleResolution() const { return (AngleMax() - AngleMin()).Radian() / (RangeCount() - 1); }
+
+    double LivoxPointsPlugin::GetRangeResolution() const { return RangeResolution(); }
+
+    double LivoxPointsPlugin::RangeResolution() const
+    {
+        if (rayShape)
+            return rayShape->GetResRange();
+        else
+            return -1;
+    }
+
+    int LivoxPointsPlugin::GetRayCount() const { return RayCount(); }
+
+    int LivoxPointsPlugin::RayCount() const
+    {
+        if (rayShape)
+            return rayShape->GetSampleCount();
+        else
+            return -1;
+    }
+
+    int LivoxPointsPlugin::GetRangeCount() const { return RangeCount(); }
+
+    int LivoxPointsPlugin::RangeCount() const
+    {
+        if (rayShape)
+            return rayShape->GetSampleCount() * rayShape->GetScanResolution();
+        else
+            return -1;
+    }
+
+    int LivoxPointsPlugin::GetVerticalRayCount() const { return VerticalRayCount(); }
+
+    int LivoxPointsPlugin::VerticalRayCount() const
+    {
+        if (rayShape)
+            return rayShape->GetVerticalSampleCount();
+        else
+            return -1;
+    }
+
+    int LivoxPointsPlugin::GetVerticalRangeCount() const { return VerticalRangeCount(); }
+
+    int LivoxPointsPlugin::VerticalRangeCount() const
+    {
+        if (rayShape)
+            return rayShape->GetVerticalSampleCount() * rayShape->GetVerticalScanResolution();
+        else
+            return -1;
+    }
+
+    ignition::math::Angle LivoxPointsPlugin::VerticalAngleMin() const
+    {
+        if (rayShape)
+        {
+            return ignition::math::Angle(rayShape->VerticalMinAngle().Radian());
+        }
+        else
+            return -1;
+    }
+
+    ignition::math::Angle LivoxPointsPlugin::VerticalAngleMax() const
+    {
+        if (rayShape)
+        {
+            return ignition::math::Angle(rayShape->VerticalMaxAngle().Radian());
+        }
+        else
+            return -1;
+    }
+
+    double LivoxPointsPlugin::GetVerticalAngleResolution() const { return VerticalAngleResolution(); }
+
+    double LivoxPointsPlugin::VerticalAngleResolution() const
+    {
+        return (VerticalAngleMax() - VerticalAngleMin()).Radian() / (VerticalRangeCount() - 1);
+    }
+
+
+}

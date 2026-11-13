@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rm_mpc_controller</name>
+  <version>0.1.0</version>
+  <description>走廊约束 MPC（nav2 Controller 插件）：吃 tdt-nav-kit 的轨迹/走廊，输出底盘速度</description>
+  <maintainer email="dev@hzmi.local">HzMi</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_util</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>rm_plan_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>pluginlib</depend>
+  <depend>eigen</depend>
+  <!-- OSQP：不通过 rosdep（本机用 tools/mpc_proto/.deps 里的 vendor 版本），见 README -->
+  <export>
+    <build_type>ament_cmake</build_type>
+    <nav2_core plugin="${prefix}/rm_mpc_controller_plugin.xml"/>
+  </export>
+</package>

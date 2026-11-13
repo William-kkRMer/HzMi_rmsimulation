@@ -1,0 +1,7 @@
+<library path="rm_tdt_local_controller">
+  <class name="rm_tdt_local_controller/TdtLocalController"
+         type="rm_tdt_local_controller::TdtLocalController"
+         base_class_type="nav2_core::Controller">
+    <description>局部 Kastar（4 m）+ 轨迹前馈跟踪；全局由 A* 提供路径</description>
+  </class>
+</library>

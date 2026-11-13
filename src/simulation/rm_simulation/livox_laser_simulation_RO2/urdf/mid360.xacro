@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:property name="M_PI" value="3.1415926"/> 
+  <xacro:property name="laser_min_range" value="0.1"/>
+  <xacro:property name="laser_max_range" value="200.0"/>
+  <!-- ★ 2026-11-01：30000 → 15000。仿真"连锁反应"的源头：30000 条射线 × 10Hz = 30 万次/秒
+       射线求交，把 gzserver 拖到 RTF≈0.38 ⇒ 扫描/时间戳/AMCL 定位全部降级 ⇒ 近目标时规划器
+       拿不到正确起点 ⇒ "Resulting plan has 0 poses"。真实 mid360 10Hz 约 2 万点，1.5 万足够 LIO+scan。
+       ★★ 2026-11-03（用户要求）：**→ 30000**（= 真机 MID-360 的 2 万点/帧 的 1.5 倍）。
+       ⚠️ 2026-11-01 那次 30000 实测把 gzserver 拖到 **RTF≈0.38**（见上一条注释）⇒ 现在再试一次，
+          判据：`ros2 topic hz /livox/lidar` —— 10 Hz × RTF，所以
+            ≈6.9 Hz ⇒ RTF 0.69（和 15000 时一样，可以接受）
+            ≈3.8 Hz ⇒ RTF 0.38（就是我记的那次崩，**立刻回 15000**）
+      回退：把下面的 30000 改回 15000（或 git revert）。 -->
+  <xacro:property name="samples" value="30000"/>
+  <xacro:property name="resolution" value="0.002"/>
+  <xacro:property name="noise_mean" value="0.0"/>
+  <xacro:property name="noise_stddev" value="0.002"/>
+
+  <xacro:property name="mass" value="0.4" />
+  <xacro:property name="length" value="0.1" />
+  <xacro:property name="width" value="0.06" />
+  <xacro:property name="height" value="0.06" />
+
+  <xacro:macro name="box_inertia" params="m w h d">
+    <inertial>
+      <origin xyz="0 0 0" rpy="${pi/2} 0 ${pi/2}"/>
+      <mass value="${m}"/>
+      <inertia ixx="${(m/12) * (h*h + d*d)}" ixy="0.0" ixz="0.0" iyy="${(m/12) * (w*w + d*d)}" iyz="0.0" izz="${(m/12) * (w*w + h*h)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="mid360" params="name:='' parent:= 'base_link' topic:='mid360' *origin ">
+
+    <link name="${name}">
+      <visual>
+        <origin xyz="0.025 -0.0265 -0.025" rpy="${pi/2} 0 ${pi}"/>
+        <geometry>
+          <box size="${length} ${width} ${height}"/>
+        </geometry>
+        <material name="gray">
+          <color rgba="0.5 0.5 0.5 1"/>
+        </material>
+      </visual>
+    </link>
+
+    <joint name="${name}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${name}"/>
+      <xacro:insert_block name="origin"/>
+    </joint>
+
+    <gazebo reference="${name}">
+      <sensor type="ray" name="${name}">
+        <pose>0 0 0 0 0 0</pose>
+        <!-- ★ 2026-09-24：原来这里 <visualize>true</visualize> 且**整个 sensor 没有 <always_on>**。
+             Gazebo Classic 里 <always_on> 默认 false ⇒ 这个 ray sensor 是否真的产生扫描取决于它有没有
+             被「激活」（与 gzclient 是否在渲染、传感器是否被订阅有关）⇒ 实测出现「同一份代码、有的运行
+             点云 10Hz、有的运行 180 秒一条都没有」的间歇故障（判据：/livox/imu 100Hz、/clock RTF≈1.0、
+             而 /livox/lidar/pointcloud 0Hz，且 FAST-LIO 日志里连 'No point' 都没有 ⇒ 回调从未被调用）。
+             修：显式 always_on=true（传感器无条件扫描），并把 visualize 关掉（30000 采样的射线可视化
+             在 gzclient 里是出了名的负担，且会让传感器行为依赖渲染端）。 -->
+        <always_on>true</always_on>
+        <visualize>false</visualize>
+        <update_rate>10</update_rate>
+        <plugin name="${name}_plugin" filename="libros2_livox.so">
+          <ray>
+            <scan>
+              <horizontal>
+                <samples>100</samples>
+                <resolution>1</resolution>
+                <min_angle>${0}</min_angle>
+                <max_angle>${2*M_PI}</max_angle>
+              </horizontal>
+              <vertical>
+                <samples>360</samples>
+                <resolution>1</resolution>
+                <min_angle>${-7.22/180*M_PI}</min_angle>
+                <max_angle>${55.22/180*M_PI}</max_angle>
+              </vertical>
+            </scan>
+            <range>
+              <min>${laser_min_range}</min>
+              <max>${laser_max_range}</max>
+              <resolution>${resolution}</resolution>
+            </range>
+            <noise>
+              <type>gaussian</type>
+              <mean>${noise_mean}</mean>
+              <stddev>${noise_stddev}</stddev>
+            </noise>
+          </ray>
+          <visualize>false</visualize>
+          <samples>${samples}</samples>
+          <downsample>1</downsample>
+          <csv_file_name>$(find ros2_livox_simulation)/scan_mode/mid360.csv</csv_file_name>
+          <topic>${topic}</topic>
+        </plugin>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+
+</robot>
+

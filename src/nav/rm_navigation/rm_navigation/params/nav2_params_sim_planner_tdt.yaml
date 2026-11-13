@@ -1,0 +1,170 @@
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 5.0     # ★ 2026-11-09 提到 5 Hz：恢复态（ESCAPE）需要更快重发
+    use_sim_time: True
+    planner_plugins: ["GridBased"]
+    # ★ 2026-11-06：T-DT 完整规划器（rm_tdt_planner/TdtPlanner）
+    #   链路：二值图+Mask → A*(势场) → simplify → 梯形时间 → MinimumSnap(SFC+交替迭代) → TrajectoryPlan
+    #   A/B：planner:=smac2d（旧） vs planner:=tdt（新）
+    GridBased:
+      plugin: "rm_tdt_planner/TdtPlanner"
+      # ---- T-DT demo 参数（照抄，除 vmax/amax 用底盘值）----
+      max_corridor_range: 2.5
+      corridor_shrink: 0.15        # 他们的 demo 是 0
+      min_snap_order: 6
+      max_dx: 3
+      iter_time_limit: 10.0
+      collision_check_iter: 6
+      max_speed: 3.0              # 底盘（他们 demo 是 8，飞行器）
+      max_acc: 3.0               # 底盘；压力测试放大（他们 demo 是 2）
+      norm_time: true
+      # ★ 2026-11-09：**进程内 ROGMap**（3D 概率占据 + ProjectionLayer + ESDF）
+      #   true  ⇒ 规划器在自己进程里构造 ROGMapROS，逐格查询语义填 a_occ/sfc_map；
+      #           启动时用 mask_impl:=rogmap（此时 mask_builder / terrain_layer 都不会起）
+      #   false ⇒ 仍走 /plan_mask（mask_impl:=mask 或 terrain）
+      # ★★ 2026-11-11：**默认关掉 ROGMap**。
+    #   实测它不适合当"局部障碍源"：同一段空地上占用率从 0.20 一路爬到 0.38（只累不清），
+    #   PASSABLE 恒 0（代价层从未产出），且与 SDF 判定自相矛盾（SDF 说 1.15 m 宽松，
+    #   同一帧却因它被判"穿墙"）。它在 2D 投影上有一整套启发式（墙/隧道/表面、滞回、
+    #   最小观测体素…），我们已经踩过 4 个默认值坑（enable / unknown_as_occupied / z 带 / 累积）。
+    #   ⇒ 局部障碍改用仓库已有的 mask_impl:=terrain 或 mask。
+      # ★★★ 2026-11-11（最终决定，用户拍板）：**关掉 ROGMap**
+      #   上一轮把它打开后，实测两个硬故障：
+      #     ① `[tdt] ROGMap 查询: OCCUPIED 1.4 万格, PASSABLE 0 格, 窗口外 14.8 万格`
+      #        —— 窗口内 2/3 的格子落在查询范围外，网格与规划网格对不上；
+      #     ② 动态掩码因此灌进 177 个假障碍 ⇒ `A* 没找到路径`（目标只有 2.6 m 远）。
+      #   它不是本项目的规划要素，只当过一次"局部障碍源"的尝试 ⇒ 关闭。
+      #   false ⇒ 走 `/plan_mask`（由 mask_impl:=terrain 的 patchwork/terrain_layer 产生），
+      #   局部代价图另由 STVL 从 /segmentation/obstacle_cropped 喂。
+      use_rog_map: false
+      # ★ 尾段（8 m 之后到终点）速度：0 = 不减速、全速跑（比赛优先时间）
+      #   若想末端减速，把 tail_decel 设成 1.2 之类
+      tail_speed: 0.0
+      tail_decel: 0.0
+      simplify_threshold: 0.1
+      # ---- 栅格/Mask ----
+      dilate_cells: 2             # setSaveDistance = 1 格（仅边界安全，**不做机器人膨胀**）
+      use_mask: true
+      mask_duration: 1.0
+      mask_num_layers: 4
+      # ★★ 2026-11-10（重要）：这一批参数**之前从文件里丢了**，规划器一直用默认值
+      #   （recovery_enable 默认 true ⇒ 恢复一直是开着的，这解释了"车走不动"）
+      # ★★★ 2026-11-12：**局部窗口放大到覆盖全图**（8.0 → 30.0）。
+      #   本图 560x313 @ 0.05 = 28.0 x 15.65 m（对角 ≈ 32 m），30.0 已覆盖整张图。
+      #   效果（planner.cpp:466 的判定）：
+      #     `s_total - s_now > local_window + 0.5` 恒不成立
+      #     ⇒ L2 **一次解到真目标**（全图覆盖、整条路径都吃动态 mask）
+      #     ⇒ 同时 `two_level: true` 保留 ⇒ **全图骨架仍会计算并发布**
+      #        （/nav/l1/dbg/backbone，RViz 可见）
+      #   代价（与 8.0 的差别）：
+      #     - 每周期对**整条路径**做 MinSnap/SFC 优化 ⇒ 单次规划耗时随距离增长
+      #     - 动态障碍闪烁时全局方向可能比以前更"抖"（8 m 窗口的初衷就是压制这个）
+      #   回退：改回 8.0（= 前 8 m 优化 + 骨架尾段接到目标）。
+      two_level: true
+      local_window: 30.0
+      backbone_age: 5.0
+      # ---- 恢复闭环（现阶段先关：底层跟踪还不稳，T1 会误触发）----
+      recovery_enable: true   # 与之前一致（默认值就是 true）
+      stuck_time: 2.0        # 与之前一致（默认值 2.0）
+      stuck_eps: 0.05
+      escape_dist: 1.5
+      escape_speed: 0.3
+      escape_clear: 0.5
+      max_escape: 3.0        # 必须写小数：代码里声明的是 double，整数会被 ROS 拒绝
+      # ★★★ 2026-11-12（晚，**实测依据**）：true → **false**（回到 T-DT 上游默认）。
+      #   为什么：离线复现（minisnap_points_probe + 仿真真正用的地图 RMUC2027_v2）
+      #   显示 MinSnap 的 `snap=0` 在**非严格模式下立刻变成功**：
+      #       4 点 A: 严格 0 → 非严格 1
+      #       4 点 B: 严格 0 → 非严格 0（加密 4 倍后变 1）
+      #   而失败位置全都对应"轨迹贴墙"（日志 `轨迹净空(SDF): 最小 0.05 m` 出现百余次）。
+      #   严格模式的定义是"任一障碍格即判碰撞"，在 5 cm 栅格上等于**不允许离墙 1 格以内**，
+      #   我们这张图的通道只有 0.7 m ⇒ 正常行驶就必然触发 ⇒ MinSnap 高失败率 ⇒
+      #   连续 3 次 ⇒ T2 ⇒ ESCAPE ⇒ 乱跑/停车。
+      #   T-DT 文档（doc/Usage.md）写明非严格模式允许线段切过 ≤2 个障碍格，
+      #   "这不是几何意义上的安全距离保证" —— 所以**余量必须由 dilate_cells 提供**，
+      #   现在 dilate_cells=2（0.10 m）+ corridor_shrink 0.15 m = 0.25 m 对车半宽 0.228 m。
+      #   回退：改回 true。
+      strict_collision: false
+      
+    # ★ 2026-11-09：ROGMap 自身参数（Config::loadFromRosNode(node, "rog_map")）
+    #   ⚠ decay：包内默认 keep=0.4 / clear=0.0 **不满足自身校验**（要求 clear > keep）
+    #     不显式给 ⇒ planner_server configure 抛异常、整栈起不来
+    # ★ 2026-11-09：ROGMap 自身参数（Config::loadFromRosNode(node, "rog_map")）
+    #   ⚠ 参数名必须严格照它的 load("...") 键：
+    #     ros_callback.cloud_topic / ros_callback.odom_topic / frame_id /
+    #     projection.enable / esdf.enable / decay.keep_time / decay.clear_time
+    #   ⚠ decay 默认 keep=0.4 / clear=0.0 不满足自身校验（clear>keep）⇒ 必须显式给
+    rog_map:
+      frame_id: map
+      resolution: 0.05
+      map_size: [12.0, 12.0, 1.5]
+      ros_callback:
+        # ★★★ 2026-11-10（根因）：它的默认值是 **false**，
+        #   false 时 rog_map.cpp:289 整段（订阅云/odom、TF）都不执行
+        #   ⇒ 投影层永远为空 ⇒ 查询快照为 null ⇒ size=0x0、res=0
+        #   ⇒ 每格都"窗口外"，ROGMap 一格障碍都不贡献。
+        enable: true
+        # ★★★ 2026-11-11（**改正之前的误判**）：ROGMap 要的是**世界系（map）点云**。
+        #   源码依据 prob_map.cpp:922 `Vec3f p(pcl_p.x, pcl_p.y, pcl_p.z);` 之后
+        #   直接 `posToGlobalIndex(p, ...)`，**不对点做任何变换**；
+        #   `cur_odom` 只用于滑窗中心 / 高度裁剪 / 射线起点。
+        #   ⇒ 必须喂 zlio 的 map 系世界点云；喂传感器系原始云会整图错位。
+        cloud_topic: /localization/lio_world_cloud
+        odom_topic: /localization/odometry
+      decay:
+        keep_time: 0.8
+        clear_time: 1.2
+      projection:
+        enable: true
+        # ★★★ 2026-11-10（占用率 100% 的根因）：**地面点被判成障碍**
+        #   车在地面上，地面点在世界系 z≈0；阈值 -0.20 把整片地面都算进观测
+        #   ⇒ 每一列都有"点" ⇒ 投影层把整片区域判成 OCCUPIED（实测 100%）。
+        #   抬高到 +0.15（离地 15 cm 以上才算障碍），把地面/轮子滤掉。
+        # ★★★ 2026-11-11（占用率 100% 的**真正根因**）：ROGMap 的
+        #   `projection.unknown_as_occupied` 默认是 **true**（config.hpp:298），
+        #   含义是"没被更新过的格子一律写成 254=OCCUPIED"。
+        #   ⇒ 窗口内 occupied 恒等于 inside（日志里 3.24e4 / 3.24e4），永远 100%，
+        #     于是被我们的门控整帧丢弃 ⇒ 局部动态障碍**从来没进过规划**。
+        #   改成 false ⇒ 未观测 = 255(UNKNOWN)，我们的解码会跳过它，
+        #   只有**真正观测到**的障碍才是 254。
+        unknown_as_occupied: false
+        # 地面已由 patchwork 去掉，这里的 z 带只用来卡"真障碍的高度范围"：
+        #   0.08 = 略高于贴地噪声；0.60 = 车顶以上（再高的横杆可以钻过去）
+        # 倾斜 1.49° ⇒ 12 m 窗口上地面高度差 0.31 m；抬到 0.30 把地面条带切掉干净
+        # ★★★ 2026-11-11（实测否决了"包含地面"）：**必须排除地面**。
+        #   实测（稠密云 3977 点/帧 + 带 [-0.15,1.20]）：
+        #     occupied=4.13e4 / inside=5.15e4 ⇒ occ_ratio **0.758~0.803**（80%！）
+        #   原因：**map 系里的地面是斜的**（IMU 实测倾角 1.49°），12 m 窗口上有
+        #     0.31 m 行高差 ⇒ 地面柱的 height_delta 远超 surface_height_delta_max(0.10)
+        #     ⇒ 整片地面被判 OCCUPIED。
+        #   这不是投影层的 bug：BIT 自己的 README 也写「ProjectionLayer 依赖地面点云覆盖，
+        #     **尚未实现坡面分割**」——倾斜地面它同样处理不了。
+        #   ⇒ 用 z 带把地面切掉（0.30 ≈ 离地 0.4 m），只留墙/场地元素/横杆。
+        scan_z_min_abs: 0.30
+        # ★★ 2026-11-11：**上限收到车体高度**。之前 1.50 ⇒ 限高杆（z≈0.4~0.6）
+        #   也被投影成墙 ⇒ 走廊被一条横线封死 ⇒ A* 无解 ⇒ "狭长通道走不动"。
+        #   地面车只关心"车身高度带"内的东西：0.15 ~ 0.40 m
+        #   （高处的杆/檐可以钻过去，低处的地面要滤掉）。
+        scan_z_max_abs: 1.20
+        negative_enable: false
+        negative_drop_threshold: 0.25
+      # ⚠ 注意：ESDF 的开关在它源码里是 **field.enable**（不是 esdf.enable），
+      #   写错名字不会报错，只会静默保持默认 true（白算 3D EDT）
+      field:
+        # ★★★ 2026-11-11：**打开 ESDF**。这是 BIT（MINCO）那条路线的地基：
+        #   MINCO 的碰撞代价全部来自 signed ESDF 距离场，没有它就搬不动。
+        #   实测（投影层验证后）：finite=58081/58081、positive≈23000、max→2.5 m ⇒ 建得出来。
+        enable: true
+        # ★★★ 2026-11-11（**必须 0**）：上游默认 `field_inflation_radius = 0.33`（config.hpp:402），
+        #   它会把障碍膨胀后再做 EDT。实测后果：障碍只占 29%，但负距离格占 **60%**。
+        #   BIT 的判据是「原始距离 + 规划器自己的 safe_dist(0.35)/collision_dist(0.25)」，
+        #   若这里先膨胀 0.33，他的 safe_dist 会**叠加第二次** ⇒ 走廊被挤没。
+        #   ⇒ 距离场必须是**到真实障碍的原始距离**，净空由规划器负责。
+        inflation_radius: 0.0
+        # 距离上限；MINCO 只需要 ~1 m 内的梯度，3 m 是浪费（EDT 填充是整个耗时的主体）
+        max_distance: 3.0
+      # ★ 打开可视化，否则 /rog_map/layer_value 根本不存在（RViz 显示"no map received"）
+      visualization:
+        enable: true
+        frame_id: map
+        rate: 2.0

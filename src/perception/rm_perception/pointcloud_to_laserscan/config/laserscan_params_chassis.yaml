@@ -1,0 +1,66 @@
+# =============================================================================
+# laserscan_params_sensor_frame.yaml —— **增量覆盖**参数文件（2026-10-09 新增）
+#
+# 只被一种组合递进节点：`robot:=robot11 robot11_mount:=sensor`
+# （launch 里 `_PackageShareFile('pointcloud_to_laserscan', 'config',
+#   'laserscan_params_sensor_frame.yaml')`，见 bringup_sim.launch.py 的
+#   `bringup_pointcloud_to_laserscan_node_sensor`）。
+#
+# 为什么是"增量"而不是改 laserscan_params.yaml：
+#   同一份参数文件的**语义前提**在两档下不同。`robot11_mount:=plugin|urdf`（以及默认模型）里
+#   点云/`/segmentation/obstacle` 的坐标已经是**重力对齐**的，`target_frame: ""`（= 不做 TF、
+#   连 MessageFilter 都不建，见 laserscan_params.yaml 顶部 2026-09-23 的考证）既是加固也是对的；
+#   而 `robot:=robot11 robot11_mount:=sensor` 档里点云**真的在传感器系**（绕 x −30°）⇒
+#   不做 TF 的话 `/scan` 就是"一张斜 30° 的 2D 平盘"：
+#     · 它每一条波束在 odom/costmap 里的 z 会随方位在 ±0.5·r 之间摆动
+#       ⇒ `obstacle_layer.min/max_obstacle_height`(0/2.0) 会把**一半以上的波束按高度丢掉**
+#       （实测 `robot11_mount:=urdf` 档丢 **677/948 = 71.4%**，且丢掉的正是"斜装雷达唯一
+#        看得见东西的那半边"，见 docs/tilted_lidar_fidelity.md §I.7）；
+#     · `min_height/max_height`（−1.0/1.0）也不再是"离传感器的真高度"。
+#   本文件把 `target_frame` 设成 `base_link` ⇒ 节点先用 TF 把点云搬到 base_link（**含平移**）、
+#   再在那一系里做高度带过滤与 2D 投影 ⇒ `/scan` 回到"重力对齐的水平面里的一圈"、
+#   `min/max_height` 恢复"相对 base_link 原点的高度"语义。
+#   ⚠️ 代价（本仓 2026-09-23 刻意避开的那类）：一旦 `target_frame` 非空，节点会建
+#      tf2 Buffer/TransformListener + MessageFilter ⇒ 多一类"TF 缺失/时间戳不齐 ⇒ 整条
+#      Talker 被静默丢弃/排队"的故障面（那时漏配 `use_sim_time` 就是这么炸的；本 launch 已修）。
+#      判活：`ros2 topic hz /scan` 与 `/segmentation/obstacle` 同步、`/scan` 的 stamp 与
+#      `/livox/lidar/pointcloud` 同帧。
+#
+# 证据 / A-B / 回退：docs/tilted_lidar_fidelity.md §J。
+# =============================================================================
+/**:
+  ros__parameters:
+    # ★ 唯一的一个键：`/scan` 的坐标系 = base_link（重力对齐）⇒ 高度带语义恢复"离地高度"。
+    #   "" = 缺省（点云自带帧 = livox_frame，本仓"点云在源头已重力对齐"那两档用）。
+    # 2026-10-31 回退：target_frame 用 odom_level 时 p2l 的 MessageFilter transform_tolerance=0.01
+    # 等不到动态 TF ⇒ 队列积压 ⇒ /scan 盖着旧时间戳（实测卡在 33.7s）⇒ nav2 代价图丢弃
+    # ⇒ planner 出 0 条路径。先回 base_link（静态 TF，稳）；坡上斜切片的问题另找方案。
+    # ★ 2026-11-01：改回 **odom_level（重力对齐系）** —— 这是"上下坡导致地图飘"的根治：
+    #   · 用 base_link（随车倾斜）时，坡上 2D 切片是**斜的** ⇒ 墙变厚/重影 ⇒ slam 匹配被拉歪
+    #   · 用 odom_level 时，切片永远是**水平**的，地面恒在 z≈0 ⇒ 高度带语义稳定
+    #   上次回退是因为 p2l 的 transform_tolerance 只有 0.01，等不到**动态** TF（odom_level→base
+    #   是 LIO 50 Hz 发的）⇒ 队列积压、/scan 盖旧时间戳。现在把容差放大到 0.5 s 即可。
+    # ★★★ 2026-11-11（用户决定）：**高度带绑定 base_link**，不再绑地面系。
+    #   理由：`odom_level` 这套只在 gravity=base 之外的档位存在（当前实测日志明确
+    #   "没有 odom_level 这个帧"），而重力对齐的 odom 在坡道上会倾斜 ⇒
+    #   "世界高度"切片在坡上恒为斜切面，矮墙/坡面判据随之漂移。
+    #   绑 base_link ⇒ 切片跟着车体走，**坡道与平地语义一致**，这正是要的。
+    #   代价：切的是"相对车体的高度"，不是"绝对离地高度"；上下坡时带内内容随姿态变化，
+    #   但车身姿态由 IMU 稳定，变化量 = 坡度（≤35° 时 cos 误差 <19%），可接受。
+    # ★ 用空串 = **完全旁路 TF**：p2l 认为输入的 `/segmentation/obstacle_cropped`
+    #   本来就在自己的帧里（cloud_crop 的 target 就是 base_link）⇒ 零等待、不丢帧。
+    #   写 "base_link" 也行，但会多建一层 MessageFilter 按消息戳查 TF（RTF<1 时会掉帧）。
+    #   ⚠️ **不要**再写 odom_level：当前 gravity:=base 档位根本没有这个帧，
+    #   而且不建图 ⇒ 不需要“重力水平帧”那套语义。
+    target_frame: ""
+    transform_tolerance: 0.5
+    # ★ 高度带改到 odom_level（地面 z≈0）的"世界高度"语义。
+    min_height: -0.05   # ★ 相对 base_link：下探 5 cm 兜住地面/坡脚，避免坡道前沿漏检
+    # ★ 高度上限 **世界 0.20 m**。
+    #   ⚠️⚠️ 车高 0.221 m ⇒ **只剩 3 cm 余量**（用户指定）。
+    #   0.25 m 以上的一切都被丢弃 ⇒ 若有 0.26~0.35 m 的横杆/矮梁，2D 图里不会出现，
+    #   车会真撞上去。只在"已知净高都 >0.3 m"的场地用这个值。
+    # 用途：① 建图（slam_toolbox 吃 /scan）时把 0.6 m 以上的东西（限高杆/横幅/围栏横杆）
+    #         直接不写进 PGM；② 导航时同类高处结构也不进代价图。
+    # 立柱仍保留（立柱从地面长起，低处有点）；车高 0.221 m，0.6 m 有充足余量。
+    max_height: 0.20    # ★ 相对 base_link +20 cm（车高 0.221 m ⇒ 车顶以下才进图）

@@ -1,0 +1,7 @@
+<library path="rm_tdt_planner">
+  <class name="rm_tdt_planner/TdtPlanner"
+         type="rm_tdt_planner::TdtPlanner"
+         base_class_type="nav2_core::GlobalPlanner">
+    <description>T-DT 完整规划器：A*(势场) → 简化 → 梯形时间 → MinimumSnap(SFC+迭代) → TrajectoryPlan</description>
+  </class>
+</library>

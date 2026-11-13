@@ -1,0 +1,612 @@
+# =============================================================================
+# nav2 仿真参数 —— 公共段（base）
+#   ★ 2026-10-05 分层重构（动机/验证见 docs/cod_nav_2026_migration_worksheet.md §J）：
+#     base（本文件）                          = 除 planner_server / controller_server 外的**全部**段；
+#     nav2_params_sim_planner_<planner>.yaml  = planner_server 段（planner:=navfn | smac2d）；
+#     nav2_params_sim_controller_<nav>.yaml   = controller_server 段（nav:=rpp | dwb | teb | mppi）。
+#   三份文件由 bringup_sim.launch.py 按 base → planner 槽 → controller 槽 的顺序**一起**传给
+#   同一个 nav2 节点（ROS 2 的 parameters= 支持多文件按顺序叠加，后写的覆盖先写的）；每个节点
+#   只读自己名字那一段，所以三段互不冲突。改公共参数只改本文件一处，不再改 N 份副本。
+#   ⚠️ 旧的 nav2_params_sim_<nav>[_smac2d].yaml（8 份 full copy）已废弃，仅留作参考/回滚。
+# =============================================================================
+amcl:
+  ros__parameters:
+    use_sim_time: True
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    base_frame_id: "base_link"
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: "map"
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 100.0
+    laser_min_range: -1.0
+    laser_model_type: "likelihood_field"
+    max_beams: 60
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: "odom"
+    pf_err: 0.05
+    pf_z: 0.99
+    # ★ 2026-10-05：0.0 → 0.1（同上）。回退：改回 0.0。
+    recovery_alpha_fast: 0.1
+    # ★ 2026-10-05：0.0 → 0.001。原值 0 把 AMCL 的【随机重采样恢复】整个关掉了 ⇒ 一旦跟丢就永久跟丢。
+    #   恢复 nav2 默认量级。回退：改回 0.0。
+    recovery_alpha_slow: 0.001
+    resample_interval: 1
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    save_pose_rate: 0.5
+    sigma_hit: 0.2
+    tf_broadcast: true
+    # ★ 2026-10-05：1.0 → 0.3。原来设 1.0 是掩盖 TF 时序问题，但 map→odom 会被【外推到未来 1 秒】——
+    #   车跑 2 m/s（nav:=mppi）时相当于外推 2 m ⇒ 表现为"定位滞后→猛修正→来回抖"。
+    #   高速下必须收小。回退：改回 1.0。
+    transform_tolerance: 0.3
+    # ★ 2026-10-05：0.2 → 0.05（同上，转 0.2 rad 才更新 → 0.05）。回退：改回 0.2。
+    update_min_a: 0.05
+    # ★ 2026-10-05：0.25 → 0.05。AMCL 是【阈值触发】的离散修正器：只在移动 0.25 m 后才更新，
+    #   而 2 m/s × 7~10 Hz 的 /scan 每帧已走 0.2~0.3 m ⇒ 阈值卡在边界、更新被节流、修正成本"台阶"。
+    #   收到 0.05 让它每帧都参与更新。回退：改回 0.25。
+    update_min_d: 0.05
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.5
+    z_short: 0.05
+    scan_topic: scan
+    # sim 自动初值（map 系原点约定见 docs/smoke_test_runbook.md §0.5）：
+    #   RMUC / RMUL 的 pgm 由 sim 建图导出 → map 原点 = 机器人出生点 → 初值 (0,0)
+    #   RMUL2026 的 pgm 由场地几何生成     → map 系 = world 系      → 初值 (4.3,3.35)
+    # 实际数值由 bringup_sim.launch.py 按 world 参数用 RewrittenYaml 全路径覆盖
+    set_initial_pose: true
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+    always_reset_initial_pose: false
+
+amcl_map_client:
+  ros__parameters:
+    use_sim_time: True
+
+amcl_rclcpp_node:
+  ros__parameters:
+    use_sim_time: True
+
+bt_navigator:
+  ros__parameters:
+    use_sim_time: True
+    global_frame: map
+    robot_base_frame: base_link_fake
+    odom_topic: /Odometry
+    bt_loop_duration: 10
+    default_server_timeout: 20
+    # ★ 2026-11-10：改用 10 Hz 重规划的行为树（nav2 默认是 1 Hz —— 之前
+    #   expected_planner_frequency 设 5.0 其实没生效，真正的节拍在 BT 的 RateController）
+    #   这个路径由 launch 里 RewrittenYaml 覆盖成真实路径。
+    # ⚠️ 2026-11-13：**这一行是机器相关的绝对路径**，仓库换目录后必须手改
+    #   （bt_navigator 由 nav2_bringup 启动，launch 里无法单独覆盖这个参数；
+    #     换成相对路径会按进程 cwd 解析，不可靠）。
+    #   当前值 = <repo>/install/rm_navigation/share/rm_navigation/behavior_trees/tdt_replan_10hz.xml
+    default_nav_to_pose_bt_xml: /home/weicheng/HzMi_rmsimulation/install/rm_navigation/share/rm_navigation/behavior_trees/tdt_replan_10hz.xml
+    plugin_lib_names:
+    - nav2_compute_path_to_pose_action_bt_node
+    - nav2_compute_path_through_poses_action_bt_node
+    - nav2_follow_path_action_bt_node
+    - nav2_back_up_action_bt_node
+    - nav2_spin_action_bt_node
+    - nav2_wait_action_bt_node
+    - nav2_clear_costmap_service_bt_node
+    - nav2_is_stuck_condition_bt_node
+    - nav2_goal_reached_condition_bt_node
+    - nav2_goal_updated_condition_bt_node
+    - nav2_initial_pose_received_condition_bt_node
+    - nav2_reinitialize_global_localization_service_bt_node
+    - nav2_rate_controller_bt_node
+    - nav2_distance_controller_bt_node
+    - nav2_speed_controller_bt_node
+    - nav2_truncate_path_action_bt_node
+    - nav2_goal_updater_node_bt_node
+    - nav2_recovery_node_bt_node
+    - nav2_pipeline_sequence_bt_node
+    - nav2_round_robin_node_bt_node
+    - nav2_transform_available_condition_bt_node
+    - nav2_time_expired_condition_bt_node
+    - nav2_distance_traveled_condition_bt_node
+    - nav2_single_trigger_bt_node
+    - nav2_is_battery_low_condition_bt_node
+    - nav2_navigate_through_poses_action_bt_node
+    - nav2_navigate_to_pose_action_bt_node
+    - nav2_remove_passed_goals_action_bt_node
+    - nav2_planner_selector_bt_node
+    - nav2_controller_selector_bt_node
+    - nav2_goal_checker_selector_bt_node
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      update_frequency: 20.0
+      publish_frequency: 10.0
+      global_frame: odom
+      robot_base_frame: base_link_fake
+      use_sim_time: True
+      # ★★★ 2026-11-12（实测根因，**这是本次卡死的直接原因**）：
+      #   nav2 的 "Timed out waiting for transform" 判据是 **`now - transform_tolerance`**，
+      #   不是 `now`。容差 2.0 时它会去问 (now − 2.0 s) 的位姿：
+      #     日志实证 `Requested time 15.90 but the earliest data is at time 17.41`
+      #     17.9 = now，15.9 = now − 2.0，17.41 = zlio 开始出 odom 的时刻
+      #   ⇒ 请求的时刻**早于定位开始**，永远查不到 ⇒ costmap 卡在激活 ⇒ 全链路无输出。
+      #   ⇒ 容差必须 **小于"定位已运行的时长"**。0.5 兼顾：够吸收 20 Hz odom 的抖动，
+      #     又不会问到定位开始之前。
+      #   （上一版 2.0 的依据是 tf2_monitor 的 map→odom 延迟，那是**另一个**问题域。）
+      transform_tolerance: 0.5
+      # ★ 2026-10-31：**不要**为了绕过 isGoalReached 的 transformPose 失败而放大本值
+      #   （控制器槽文件里 2026-09-24 已有同样尝试被撤销的记录：放大后会变成 tf2 等待超时，
+      #    把 costmap 线程一次阻塞到超时）。真因是 costmap 的 tf 摄入 + 规划器 path 的时间戳，
+      #   见 docs/issues_and_findings.md。这里保持不动。
+      # ★ 2026-11-02 定性（闭环）：真因 = **tf2 0.25.23 的 ABBA 死锁**（costmap 每周期
+      #   getRobotPose→lookupTransform(timeout) 的 waitForTransform 与 /tf 监听线程的
+      #   testTransformableRequests 对向拿锁）⇒ 进程内 tf 摄入永久停摆、map→odom 戳定死。
+      #   上游 2026-09-10 修复（commit 9997e96955），**首个带修复的版本 = 0.25.24**。
+      #   ⇒ 处置是 `sudo apt install --only-upgrade 'ros-humble-tf2*'`（详见 findings §八），
+      #   不是调这个参数，也不是删 obstacle_cloud_layer（那只减少入口、不除根）。
+      rolling_window: true
+      width: 5
+      height: 5
+      resolution: 0.02
+      # ★ 2026-09-24：0.2 → 0.35（= 车体半径 0.2 + 近距盲区余量 0.15）。
+      #   本仓库没有 footprint 多边形 ⇒ nav2 的"实心圈"(代价 253, INSCRIBED) 半径就等于 robot_radius。
+      #   实测现象：车贴到内墙很近时墙会"碎掉"（进 p2l 的 range_min=0.2 盲区后被丢/被清）。
+      #   把它加大到"车体+盲区"⇒ 规划器不会再把车带进盲区，墙自然不会被贴脸。
+      #   代价：<0.7m 的窄缝会判为不可通行 ⇒ 若太保守，回退 0.25~0.30。
+      # ★ 2026-09-26：robot_radius 0.40 → 0.22（≈ 真实车体半径 0.2）——回到"真实几何"。
+      #   原因：0.40 = 车体 0.2 + 近距盲区 0.2 的"虚拟放大"⇒ **costmap 几何 ≠ 真实几何**；
+      #     车一进入 0.40 内就被当成"已在致命/内切带" ⇒ planner 把起点视为障碍、
+      #     控制器报无有效轨迹 ⇒ **卡死且无法脱困**。
+      #   盲区安全改由 inflation_radius（局部 0.5 / 全局 0.55，软带因此变宽到 0.28~0.33 m）
+      #     + 限速 / 碰撞监控承担。
+      #   回退：改回 0.40。
+      robot_radius: 0.22
+      # 局部障碍来源 = 三个可切换图层（bench 槽位，launch 用 local_obstacle 参数切 enabled；
+      # 槽位值 ↔ 图层开关的**唯一真值表**在 launch/navigation_launch.py 的
+      # LOCAL_OBSTACLE_LAYER_TABLE，静态校验脚本 tools/scripts/regress/local_obstacle_truth_table.py）：
+      #   obstacle_layer       = /scan（几何 2D；链路单点）
+      #   obstacle_cloud_layer = /segmentation/obstacle 点云直投（不经 p2l；默认关，A/B 用）
+      #   stvl_layer           = /segmentation/obstacle → 3D 体素（带时间维/衰减；默认关，
+      #                          local_obstacle:=stvl|stvl_both 才开；见 docs/stvl_local_costmap.md）
+      # 三层都写在 plugins 里、只用 enabled 切（nav2 只允许 enabled=false 的图层挂而不跑）——
+      # 这是本仓库既有机制（global 的 stvl/obstacle 就是这么切的），RewrittenYaml 只能替换
+      # **已存在的叶子键**、且不能把字符串变成 YAML 列表 ⇒ plugins 列表本身无法按槽位重写。
+      # ★ 2026-11-02：删掉 obstacle_cloud_layer（本就 enabled:false、点云障碍由 stvl 负责）。
+      #   实测 gdb 线程栈：controller 主执行器卡死在 nav2 ObstacleLayer **点云** MessageFilter 的
+      #   tf2 addTransformableRequest 锁上（transformable_requests_mutex）→ 代价图停 → too old。
+      #   该层 disabled 时订阅仍在跑，所以必须从 plugins 列表移除。
+      # ★★★ 2026-11-11（用户决定：障碍源 = patchwork + STVL）：
+      #   **`stvl_layer` 必须出现在这个列表里**，否则 nav2 根本不会实例化它 ——
+      #   而 launch 的开关表（navigation_launch.py:50）只能改 `stvl_layer.enabled`，
+      #   **改不了 plugins 列表**（本文件注释第 165 行早已写明这一点）。
+      #   之前把 stvl_layer 从列表里删掉后，`local_obstacle:=stvl` 一直是**空操作**。
+      #   现在按开关表放回去：enabled 由槽位决定，列表本身固定。
+      #   ⚠️ **不要**把 obstacle_cloud_layer 放进列表：它的配置块已在 2026-11-02 删除，
+      #   缺块的插件名会让 nav2 configure 直接失败。cloud 档同样失效，勿用。
+      plugins: ["obstacle_layer", "stvl_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: true
+        observation_sources: scan
+        scan:
+          topic: /scan
+          # /scan 由 pointcloud_to_laserscan 以 SensorDataQoS(best-effort) 发布，这里必须匹配，否则收不到数据
+          # ⚠️ 2026-09-24 核实：下面两个键在 nav2 1.1.20 里**是惰性的**——
+          #   nav2_costmap_2d/plugins/obstacle_layer.cpp:221 硬编码 rmw_qos_profile_sensor_data（best effort），
+          #   全包内 grep 不到 reliability_policy/qos_policy 的读取。保留只为留痕，改它们没有任何效果。
+          reliability_policy: "best_effort"
+          qos_policy: "best_effort"
+          # ★ 失效检测：超过该间隔没更新 → isCurrent()=false → layer current_=false →
+          #   nav2 控制器/规划器拒绝算速度，velocity_smoother 的 velocity_timeout(1.0s) 发零速停车，
+          #   同时日志出 WARN。0（默认）= 不检查 → costmap 会冻在最后一帧且毫无提示（静默失效）。
+          expected_update_rate: 0.0   # ★ 2026-09-24：0.5 会让"观测源缺一帧"变成 costmap 永久 isCurrent()==false，
+                              #   而 planner_server 的 waitForCostmap() 是无超时死等 ⇒ 规划器永久卡死（栈已证实）。
+                              #   0.0 = 上游语义（不判 stale）⇒ 规划器能返回；缺数据的风险交给传感器层解决。
+          raytrace_max_range: 6.0
+          obstacle_max_range: 6.0
+          obstacle_min_range: 0.1
+          clearing: true
+          marking: true
+          inf_is_valid: true
+          data_type: "LaserScan"
+      # 第二路（3D 点云直投）：**不经过 p2l** → 无 45cm 盲区，且 p2l 挂了这路还在（破单点）。
+      # 输入 /segmentation/obstacle 已由 linefit 去地面，所以这里不再靠高度带去地面；
+      # min_obstacle_height 只用于兜底：odom 的 z=0 ≈ base_link 起始高度（地面约 -0.05），
+      # 万一 linefit 地面模型失效、地面点混进来，这一层还能挡住。
+      obstacle_cloud_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: false                      # 默认关（launch 按 local_obstacle 覆盖）；A/B 验证过再开
+        observation_sources: cloud
+        cloud:
+          # ★ 2026-10-31：改用 cloud_crop 的输出（车体 AABB+近场圆柱已剔）——
+          #   原来吃 /segmentation/obstacle（含车体自击）⇒ STVL 把机器人自己
+          #   包成一圈障碍（local/global 两个 costmap 都是）。
+          #   非 chassis 机器人：cloud_crop 的 boxes 为空 ⇒ 该话题等于原数据（直通）。
+          topic: /segmentation/obstacle_cropped
+          data_type: "PointCloud2"
+          min_obstacle_height: -0.02
+          max_obstacle_height: 0.20   # ★ 2026-10-31：2.0→0.35（离地）。车高 0.221 m；限高杆/横幅这类「车能从下面过」的结构不应进代价图。立柱仍保留（低处有点）
+          obstacle_min_range: 0.0           # ★ 从 0 起 → 消掉 p2l 的 45cm 盲区
+          obstacle_max_range: 3.0
+          raytrace_max_range: 4.0
+          clearing: true
+          marking: true
+          expected_update_rate: 0.0   # ★ 2026-09-24：0.5 会让"观测源缺一帧"变成 costmap 永久 isCurrent()==false，
+                              #   而 planner_server 的 waitForCostmap() 是无超时死等 ⇒ 规划器永久卡死（栈已证实）。
+                              #   0.0 = 上游语义（不判 stale）⇒ 规划器能返回；缺数据的风险交给传感器层解决。
+      # ★ 2026-10-05：第三路 = STVL 3D 体素层（`local_obstacle:=stvl` / `stvl_both` 才开，默认关）。
+      #   动机（COD 2026 双图同款）：COD 的 local 与 global **两个** costmap 都跑
+      #   SpatioTemporalVoxelLayer（third_party/cod_nav_2026/src/cod_bringup/params/singlenav2_params.yaml
+      #   局部段 200-262 与全局段 290-352，**两段数值逐键相同**）；我们的 local 只有 2D 源
+      #   （/scan 或点云直投），**没有时间维**（残影只能靠 raytrace 清）。
+      #   ⇒ 这里整块**镜像本文件 global_costmap 的 stvl_layer**（同源 /segmentation/obstacle、同高度带），
+      #     目的是让两张图对"什么算障碍"口径一致；只在与局部相关处偏离，逐条标注：
+      #     · publish_voxel_map: false —— 偏离我们的 global(true)，**取 COD 的值**（S:214 / S:304 两处都 false）：
+      #       局部 5×5 m @10Hz 发体素图纯属开销（RViz 看体素用 global 那张即可）。
+      #     · 其余全部沿用本文件 global 段（voxel_decay 0.5 / decay_model 0 / voxel_size 0.05 /
+      #       mark_threshold 0 / observation_persistence 0.0 / combination_method 1 / origin_z 0.0 /
+      #       transform_tolerance 0.2 / max_obstacle_height 2.0 —— 与 COD S:203-217、S:293-307 同值，
+      #       **唯一例外是 min_obstacle_height 0.0**：COD 是 0.15（S:229/319），我们 2026-09-24 为
+      #       RMUL2026 的 0.4 m 矮内墙改成 0.0（见下方 global 段的论证）——local 若用 0.15 会出现
+      #       "global 看得见、local 看不见"的分裂，故跟 global 保持一致。
+      #     · 观测源同样拆 mark / clear 两路（本仓库 global 的写法）：COD 是**单源** marking+clearing
+      #       （S:313-314），我们拆开是为了让 clearing 走垂直 FOV 更宽的 frustum。
+      #   回退：`local_obstacle:=scan`（本层 enabled=false，等价于今天）。
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: false                      # 默认关（launch 按 local_obstacle 覆盖）
+        voxel_decay:              0.5       # COD S:203 线性衰减 0.5 s
+        decay_model:              0         # COD S:204：0=线性，1=指数，2=持久
+        voxel_size:               0.05      # COD S:205；⚠️ 比局部栅格 0.02 **粗 2.5 倍** ⇒
+                                            # 一个体素只落到一个局部格 ⇒ 墙在局部图上呈
+                                            # **周期 0.05 m 的点状线**（实测见
+                                            # docs/stvl_local_costmap.md §3.3）；要连续线就把
+                                            # 它降到 0.02（未实测）
+        track_unknown_space:      true      # 镜像 global 段
+        # ★ 2026-11-02（按用户要求改回 3）：同一 0.05 m 体素里 ≥3 个点才标记。
+        #   代价：远处的墙/杆每体素只有 1~2 个点 ⇒ 标记会**断续**（膨胀一阵一阵地出现）。
+        #   收益：压掉近场那圈"离地 5~18 cm"的杂点（实测每帧 700~2100 个）。
+        #   ⚠️ 噪声的真正来源是**世界模型**（场地中间有一层高出地面 ~0.3 m 的"幽灵面"），
+        #      见 perception_watch / RMUC2027.stl 的实测结论；等场地修好后可改回 0。
+        # ★ 2026-11-03（用户要求）：3 → **1**（票数门槛放松，膨胀不再"一阵一阵"）。
+        #   nav2/STVL 的比较是 `voxel_votes > mark_threshold` ⇒ 1 = 需要 ≥2 个点（3 时要 ≥4 个）；
+        #   0 = 1 个点就标（最敏感）。回退阶梯：1 → 3 → 0。
+        mark_threshold:           3                                 # 用户要 2.5 ⇒ 只能整数，取最近合法值 3（= 需 ≥4 个点）
+        update_footprint_enabled: true      # COD S:210
+        combination_method:       1         # COD S:211：1=max
+        origin_z:                 0.0
+        publish_voxel_map:        true      # ★ 2026-11-02 临时开：诊断用（voxel_z_stats 要 /local_costmap/voxel_grid）
+        #                                    查完改回 false（省 CPU）
+        transform_tolerance:      2.0       # COD S:215
+        mapping_mode:             false
+        map_save_duration:        60.0
+        observation_sources:      livox_mark livox_clear
+        livox_mark:
+          data_type: PointCloud2
+          # ★ 2026-10-31：改用 cloud_crop 的输出（车体 AABB+近场圆柱已剔）——
+          #   原来吃 /segmentation/obstacle（含车体自击）⇒ STVL 把机器人自己
+          #   包成一圈障碍（local/global 两个 costmap 都是）。
+          #   非 chassis 机器人：cloud_crop 的 boxes 为空 ⇒ 该话题等于原数据（直通）。
+          topic: /segmentation/obstacle_cropped
+          marking: true
+          clearing: false
+          obstacle_range: 3.0
+          # ★ 2026-11-02（用户要求的“把高度降低”对照试验）：
+          #   背景（实测，来自场地 STL）：门洞上方 z≈0.294 m 有一层连续水平板（无竖直面，是低顶棚），
+          #   车体+雷达总高 ~0.19~0.21 m ⇒ 物理上能钻过去（余量 ~8 cm），这块板**不该**算障碍。
+          #   现在**与全局用完全相同的数值** `[-0.138, 0.042]` 试（用户要求“按全局那个参考坐标系”）：
+          #   注意 —— 数值相同 ≠ 物理相同：局部帧 z=0 在地面，所以这条实际是“离地 −13.8~+4.2 cm”
+          #   （几乎等于把局部障碍层关掉），而全局那条是“离地 0~18 cm”。
+          #   目的：把“局部到底有没有在挡”这件事一次性排除——
+          #     · 若车能穿门 ⇒ 之前挡的就是局部标记（高度带问题）；
+          #     · 若仍不能 ⇒ 与高度/感知彻底无关（门宽 0.70 m + 车宽 0.456 m / 控制器）。
+          #   若你要的是“两边物理高度一致”，局部应写 `0.0 / 0.18`（= 全局的离地 0~18 cm）。
+          #   回退：min 0.0 / max 0.20。
+          # ★★ 2026-11-03：局部帧回到 odom_level（z=0 = 地面）⇒ 带子必须用"离地"口径：
+          #   0.00~0.18 m。别照抄全局那组（map 帧的 z=0 在地面上方 0.138 m）。
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.18
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          inf_is_valid: false
+          filter: "voxel"
+          voxel_min_points: 0
+          clear_after_reading: true
+        livox_clear:
+          enabled: true
+          data_type: PointCloud2
+          # ★ 2026-10-31：改用 cloud_crop 的输出（车体 AABB+近场圆柱已剔）——
+          #   原来吃 /segmentation/obstacle（含车体自击）⇒ STVL 把机器人自己
+          #   包成一圈障碍（local/global 两个 costmap 都是）。
+          #   非 chassis 机器人：cloud_crop 的 boxes 为空 ⇒ 该话题等于原数据（直通）。
+          topic: /segmentation/obstacle_cropped
+          marking: false
+          clearing: true
+          max_z: 8.0
+          min_z: 1.0
+          vertical_fov_angle: 1.029
+          vertical_fov_padding: 0.05
+          horizontal_fov_angle: 6.29
+          decay_acceleration: 5.0
+          model_type: 1
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # ★ 2026-11-02（实测定位，解决"局部把 0.7 m 门洞连成一片"）：
+        #   场地门洞净宽（map RMUC2027_v2 实测，x∈[-1.56,-0.88]、y≈3.90~4.30）= **0.68~0.74 m**；
+        #   车体 0.456×0.446 m（URDF），`robot_radius 0.22` = 半宽 ⇒ 物理余量 ~12 cm/侧。
+        #   旧值 0.5 ⇒ 两侧膨胀带 0.5+0.5=1.0 m **远大于门宽 0.7 m** ⇒ 整个门洞被代价铺满、
+        #   视觉上"连成一片"（与高度带无关，所以改 STVL 高度前后一样）；
+        #   门洞中心（离门框 0.35 m）代价 = 252·exp(-5·(0.35-0.22)) ≈ 131 ⇒ MPPI 宁可绕 24 m。
+        #   ⇒ 0.5 → 0.30：门洞中间重新出现 **~10 cm 宽、代价为 0 的通道**（0.70−2×0.30），
+        #     软带只比车体宽 8 cm（代价衰减更快，见 cost_scaling_factor）。
+        #   ⚠️ 副作用：贴墙"虚"保护变薄（0.08 m）⇒ 若出现擦墙/贴脸，回退 0.4 或换回 0.5。
+        # ★ 2026-11-03（实测走廊 0.80~0.86 m，见下）：
+        #   0.30 → **0.24**（= robot_radius 0.22 + 2 cm 余量）。算账：
+        #     走廊 0.80 m、车半径 0.22 ⇒ 合法宽度 0.80−0.44 = 0.36 m；
+        #     膨胀 0.30 ⇒ 零代价通道只剩 0.80−0.60 = **0.20 m**，且两侧是 100~250 的高代价，
+        #     MPPI(CostCritic weight 10) 宁可绕/不动 ⇒ 车在走廊口来回振荡（实测 y −7.15 附近）。
+        #     膨胀 0.24 ⇒ 零代价通道 0.80−0.48 = **0.32 m**，代价梯度也缓得多。
+        #   回退：0.30。
+        # ★ 2026-11-03：**0.24 → 0.30**（用户要求：还是贴着走，就把膨胀改大）。
+        #   软带从 2 cm 变成 **8 cm**（0.22~0.30），梯度照旧 10（见下）。
+        #   走廊账（实测最窄 0.80 m，门洞 0.70 m）：
+        #     0.80 m 走廊：中心离墙 0.40 > 0.30 ⇒ 中心**零代价**；零代价带宽 2×(0.40−0.30) = 0.20 m ✓ 仍可过；
+        #     0.70 m 门  ：中心离墙 0.35 > 0.30 ⇒ 仍为零代价，零代价带宽 2×(0.35−0.30) = 0.10 m（很窄但存在）。
+        #   代价曲线（cost = 252·exp(−10·(d−0.22))）：d=0.24→201、0.26→169、0.28→138、0.30→113
+        #   ⇒ 8 cm 内代价从 201 平滑降到 113，MPPI 会被明显推向中心。
+        #   ★ 2026-11-03 第二轮（用户要求）：0.30 → **0.35**（0.40 试过一版，按用户要求收到 0.35）。
+        #   0.40 的含义 = robot_radius 0.22 + **18 cm 软带**。重算（scaling 仍是 10）：
+        #     0.80 m 走廊：中心离墙 0.40 ⇒ 代价 252·exp(−10·0.18)=**42**（整条走廊都有代价，
+        #                 但**非致命**；可通行宽度 = 0.80−2×0.22 = 0.36 m，中心区最便宜）
+        #     0.70 m 门  ：中心离墙 0.35 ⇒ 代价 **69**（仍可通行；可通行宽度 0.70−0.44 = 0.26 m）
+        #   ⇒ 走廊里"零代价区"消失、变成"越靠中心越便宜"的碗形 ⇒ MPPI 被明确压向中心，
+        #     想贴边走就要付 200+ 的代价（0.24 处 201、0.30 处 113、0.36 处 63、0.40 处 42）。
+        #   0.35 的具体数（scaling 10）：
+        #     0.80 m 走廊：中心离墙 0.40 > 0.35 ⇒ **零代价**；零代价带宽 2×(0.40−0.35)=0.10 m
+        #     0.70 m 门  ：中心离墙 0.35 = 0.35 ⇒ 边界；中心代价 ≈ 252·exp(−10·0.13)=69
+        #   代价曲线：0.24→206、0.30→113、0.35→69、0.40→42
+        #   回退阶梯：0.35 → 0.30 → 0.27 → 0.24。
+        # ★★ 2026-11-03 第三轮（用户要求"梯度改特别小"）：**10.0 → 2.0**。
+        #   注意方向：cost(d) = 252·exp(−scaling·(d−0.22))，**scaling 越小 ⇒ 衰减越慢 ⇒
+        #   同样的距离代价越高 ⇒ 车更怕**。所以"特别小"= 更保守，不是更宽松。
+        #   scaling=2.0 时（离墙距离→代价）：0.24→243、0.30→215、0.35→194、0.50→144、0.80→79、1.20→36
+        #   ⇒ 膨胀半径 0.35 以内几乎"满格"（194~243），0.35 边界处**从 194 直接掉到 0**（有个悬崖）。
+        #   预期副作用：0.70 m 门洞（中心离墙 0.35 → 194）会变成"很不愿意进"。
+        #   回退：10.0（更温和）或 5.0（中间档）。
+        # ★ 2026-11-03 第四轮（用户要求）：**2.0 → 1.0**。
+        #   cost(d)=252·exp(−1·(d−0.22))，而在 d>inflation_radius(0.35) 处 computeCost 直接返回 0
+        #   ⇒ 这一档几乎是**阶跃**：0.22~0.35 全是 220~253，0.35 之外突然 0。
+        #   实测曲线：0.24→246、0.30→233、0.35→**220**，0.36→**0**（悬崖落差 220）。
+        #   含义：车会把"离墙 0.35 m"当成硬边界；**梯度基本消失**（13 cm 内只降 26）。
+        #   若想"又宽又平滑"：把 inflation_radius 抬到 0.5~0.6，同时 scaling 回 3~5。
+        #   回退：2.0 → 5.0（甜点）→ 10.0。
+        cost_scaling_factor: 1.0
+        inflation_radius: 0.35
+      always_send_full_costmap: true
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      update_frequency: 5.0
+      publish_frequency: 2.0
+      # ★ 2026-11-01：map → **odom_level**。
+      #   实测：gicp 发的 map→odom 落后 ~2 s ⇒ controller/planner 查 map→odom_level 时
+      #   永远「Transform data too old」⇒ getRobotPose 失败 ⇒ **一个 cmd_vel 都不发（车不动）**。
+      #   odom_level 是局部连续帧（LIO 直连、零滞后），静态边 odom→odom_level 是 latched，
+      #   所以 global_costmap 用 odom_level 就不再依赖那条滞后的边。
+      #   ⚠ 但 static_layer 的先验图在 map 系 ⇒ 这行必须留在 map（odom_level 会让 static_layer 出错）。
+      global_frame: map
+      robot_base_frame: base_link_fake
+      use_sim_time: True
+      # ★★★ 2026-11-12（**实测对照**）：本项原来**没写** ⇒ 走 nav2 默认 0.1 s。
+      #   同一轮里 `local_costmap` 写了 0.5 并**激活成功**，而本图一直报
+      #     `Requested time 18.70 but the latest data is at time 17.70`（恒定差 ~1.0 s）
+      #   容差 0.1 装不下「odom 20 Hz + base_link_fake 20 Hz」两条链的抖动
+      #   ⇒ global_costmap 永不激活 ⇒ planner 不激活 ⇒ 没有 /plan、没有 /opt_path
+      #   ⇒ 表现为「指令下不去」。与 local 对齐为 0.5。
+      transform_tolerance: 0.5
+      # ★ 2026-09-24：0.2 → 0.35（同上，**全局这张才是规划用的**，漏改会导致 planner 仍允许贴脸）
+      # ★ 2026-09-26：robot_radius 0.40 → 0.22（≈ 真实车体半径 0.2）——回到"真实几何"。
+      #   原因：0.40 = 车体 0.2 + 近距盲区 0.2 的"虚拟放大"⇒ **costmap 几何 ≠ 真实几何**；
+      #     车一进入 0.40 内就被当成"已在致命/内切带" ⇒ planner 把起点视为障碍、
+      #     控制器报无有效轨迹 ⇒ **卡死且无法脱困**。
+      #   盲区安全改由 inflation_radius（局部 0.5 / 全局 0.55，软带因此变宽到 0.28~0.33 m）
+      #     + 限速 / 碰撞监控承担。
+      #   回退：改回 0.40。
+      robot_radius: 0.22
+      resolution: 0.04
+      track_unknown_space: true
+      # 实时障碍来源二选一（由 launch 的 global_obstacle 参数切 enabled，默认 stvl 保持原行为）：
+      #   stvl_layer     = 3D 体素层（吃 /segmentation/obstacle，高度带 0.2~2.0，带时间衰减）
+      #   obstacle_layer = 2D /scan 障碍层（与 local_costmap 同源 → "什么算障碍"只在感知域 p2l 决策一处）
+      # ★★★ 2026-11-11：同上，全局图也把 stvl_layer 放回列表
+      #   （GLOBAL_OBSTACLE_LAYER_TABLE 也只切 enabled，不切列表）。
+      plugins: ["static_layer", "obstacle_layer", "stvl_layer", "inflation_layer"]
+      obstacle_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: false                      # 默认关（launch 按 global_obstacle 覆盖）
+        observation_sources: scan
+        scan:
+          topic: /scan
+          # ⚠️ 2026-09-24 核实：下面两个键在 nav2 1.1.20 里**是惰性的**——
+          #   nav2_costmap_2d/plugins/obstacle_layer.cpp:221 硬编码 rmw_qos_profile_sensor_data（best effort），
+          #   全包内 grep 不到 reliability_policy/qos_policy 的读取。保留只为留痕，改它们没有任何效果。
+          reliability_policy: "best_effort"  # 惰性键（见上）；真正生效的是 obstacle_layer 硬编码的 sensor QoS
+          qos_policy: "best_effort"
+          data_type: "LaserScan"
+          clearing: true
+          marking: true
+          inf_is_valid: true
+          # ⚠️ 不能照抄 local 的 6.0：global 是**全图**（RMUL 13×10 m），
+          # raytrace 只能清 raytrace_max_range 以内的旧标记 → 范围太小会累积"幽灵障碍"。
+          # 这里与 p2l 的 range_max 对齐（10 m），即"扫描能看到多远就能清多远"。
+          obstacle_max_range: 10.0
+          raytrace_max_range: 10.0
+          obstacle_min_range: 0.1
+          max_obstacle_height: 0.20   # ★ 2026-10-31：2.0→0.35（离地）。车高 0.221 m；限高杆/横幅这类「车能从下面过」的结构不应进代价图。立柱仍保留（低处有点）
+          expected_update_rate: 0.0   # ★ 2026-09-24：0.5 会让"观测源缺一帧"变成 costmap 永久 isCurrent()==false，
+                              #   而 planner_server 的 waitForCostmap() 是无超时死等 ⇒ 规划器永久卡死（栈已证实）。
+                              #   0.0 = 上游语义（不判 stale）⇒ 规划器能返回；缺数据的风险交给传感器层解决。           # ★ 失效检测（0=不检查 → 静默失效）
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: true                       # 默认开（launch 按 global_obstacle 覆盖）
+        # https://github.com/SteveMacenski/spatio_temporal_voxel_layer
+        voxel_decay:              0.5                               # 如果是线性衰减，单位为秒；如果是指数衰减，则为 e 的 n 次方
+        decay_model:              0                                 # 衰减模型，0=线性，1=指数，-1=持久
+        voxel_size:               0.05                              # 每个体素的尺寸，单位为米
+        track_unknown_space:      true                              # default space is unknown
+        mark_threshold:           3                                 # 用户要 2.5 ⇒ 只能整数，取最近合法值 3（= 需 ≥4 个点）
+        update_footprint_enabled: true
+        combination_method:       1                                 # 1=max, 0=override
+        origin_z:                 0.0                               # 单位为米
+        publish_voxel_map:        true                              # default false, 是否发布体素地图
+        transform_tolerance:      2.0                               # 单位为秒
+        mapping_mode:             false                             # default off, saves map not for navigation
+        map_save_duration:        60.0                              # default 60s, how often to autosave
+        observation_sources:      livox_mark livox_clear
+        livox_mark:
+          data_type: PointCloud2
+          # ★ 2026-10-31：改用 cloud_crop 的输出（车体 AABB+近场圆柱已剔）——
+          #   原来吃 /segmentation/obstacle（含车体自击）⇒ STVL 把机器人自己
+          #   包成一圈障碍（local/global 两个 costmap 都是）。
+          #   非 chassis 机器人：cloud_crop 的 boxes 为空 ⇒ 该话题等于原数据（直通）。
+          topic: /segmentation/obstacle_cropped
+          marking: true
+          clearing: false
+          obstacle_range: 3.0                                       # meters
+          # ★ 2026-09-24：min_obstacle_height 0.2 → 0.0。
+          #   原来把 20cm 以下全丢 ⇒ 矮内墙在 stvl 里天然不存在；而全局 costmap 才是规划用的那一张
+          #   ⇒「stvl 有的才规避」的现象由此而来。代价：贴地噪声更易成为障碍（幽灵障碍）⇒ 出现就回退 0.05。
+          #   ⚠️ 前提：stvl 必须真收到点云；若终端仍刷 'Message Filter dropping … livox_frame'，改这里无效（先修 TF，见 docs/debug_fastlio_cartographer.md §9.2）。
+          # ★ 2026-11-02 实验记录（已回退）：曾改成 min=-0.138 / max=0.062，想让全局也变成
+          #   「离地 0~0.20」。**现场症状 = 全局过得去、局部过不去**（全局变"瞎"、局部仍按
+          #   0~0.20 挡）⇒ 怀疑 STVL 的体素栅格不接受负 z（原点固定在 0 ⇒ 负带被丢，
+          #   全局实际只剩 [0, 0.062] 的薄片）。恢复 0.0 / 0.20 后全局仍是「离地 0.138~0.338」。
+          #   结论（取舍）：**全局图"偏高"其实是合理的**——全局只做粗粒度选路（静态图 + 中高障碍），
+          #   矮于 ~0.14 m 的临时物本来就该由局部（0~0.20，逐点、0.5 s 衰减）来绕。
+          #   要让两者严格同义，必须解决 map 帧 z 原点（0.138）而非改这两个数；待办见
+          #   docs/issues_and_findings.md §八。
+          min_obstacle_height: -0.138                               # = 地面在 map 里的 z（原 0.0）
+          # ★ 2026-11-02（同一次试验）：全局帧是 map，z=0 在地面上方 0.138 m
+          #   （静态边 T_odom←odom_level z=−0.138；AMCL 的 map→odom 是 2D、z=0）。
+          #   原来 [0.0, 0.20] = 离地 0.138~0.338 ⇒ 会把门洞上方那块 **z≈0.294 m 的顶板**算成障碍
+          #   （实测自 RMUC2027.stl），于是全局规划器绕大圈（472 点）。
+          #   压到 [-0.138, 0.042] ⇒ 离地 0~0.18 m，与局部同义，且 0.294 的板出界。
+          #   回退：0.0 / 0.20。
+          max_obstacle_height: 0.042
+
+          expected_update_rate: 0.0   # ★ 2026-09-24：0.5 会让"观测源缺一帧"变成 costmap 永久 isCurrent()==false，
+                              #   而 planner_server 的 waitForCostmap() 是无超时死等 ⇒ 规划器永久卡死（栈已证实）。
+                              #   0.0 = 上游语义（不判 stale）⇒ 规划器能返回；缺数据的风险交给传感器层解决。                                 # ★ 0=不检查(默认)→静默失效；0.5=源超时即告警
+          observation_persistence: 0.0                              # default 0, use all measurements taken during now-value, 0=latest
+          inf_is_valid: false                                       # default false, for laser scans
+          filter: "voxel"                                           # default passthrough, apply "voxel", "passthrough", or no filter to sensor data, recommend on
+          voxel_min_points: 0                                       # default 0, minimum points per voxel for voxel filter
+          clear_after_reading: true                                 # default false, clear the buffer after the layer gets readings from it
+        livox_clear:
+          enabled: true                                             # default true, can be toggled on/off with associated service call
+          data_type: PointCloud2
+          # ★ 2026-10-31：改用 cloud_crop 的输出（车体 AABB+近场圆柱已剔）——
+          #   原来吃 /segmentation/obstacle（含车体自击）⇒ STVL 把机器人自己
+          #   包成一圈障碍（local/global 两个 costmap 都是）。
+          #   非 chassis 机器人：cloud_crop 的 boxes 为空 ⇒ 该话题等于原数据（直通）。
+          topic: /segmentation/obstacle_cropped
+          marking: false
+          clearing: true
+          max_z: 8.0                                                # default 10, meters
+          min_z: 1.0                                                # default 0, meters
+          vertical_fov_angle: 1.029                                 # 垂直视场角，单位为弧度，For 3D lidars it's the symmetric FOV about the planar axis.
+          vertical_fov_padding: 0.05                                # 3D Lidar only. Default 0, in meters
+          horizontal_fov_angle: 6.29                                # 3D 激光雷达水平视场角
+          decay_acceleration: 5.0                                   # default 0, 1/s^2.
+          model_type: 1                                             # 0=深度相机，1=3D激光雷达
+      static_layer:
+        plugin: "nav2_costmap_2d::StaticLayer"
+        footprint_clearing_enabled: True
+        map_subscribe_transient_local: True
+      inflation_layer:
+        plugin: "nav2_costmap_2d::InflationLayer"
+        cost_scaling_factor: 8.0
+        # ★ 2026-11-02（用户要求，与局部同步）：0.55 → 0.30。
+        #   算账（实测门宽 0.68~0.74 m，robot_radius 0.22）：
+        #     0.55 时门心（离门框 0.35 m）代价 = 252·exp(-8·(0.35-0.22)) ≈ **89**，
+        #     叠加 cost_travel_multiplier 4.0 ⇒ SMAC2D 宁可走 463 点绕行；
+        #     0.30 时门心已在带外 ⇒ 代价 **0**，门里留 ~0.10 m(2 格@0.05) 的零代价通道。
+        #   回退：0.55。
+        inflation_radius: 0.30
+      always_send_full_costmap: True
+
+map_saver:
+  ros__parameters:
+    use_sim_time: True
+    save_map_timeout: 5.0
+    free_thresh_default: 0.25
+    occupied_thresh_default: 0.65
+    map_subscribe_transient_local: True
+
+behavior_server:
+  ros__parameters:
+    # 注意：Humble 的节点名是 behavior_server（Galactic 叫 recoveries_server）。
+    # 曾经这里写的是 recoveries_server，导致整段参数被静默忽略、实际走 nav2 内置默认
+    # （robot_base_frame=base_link、max_rotational_vel=1.0、只加载默认插件列表）。
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "wait"]
+    spin:
+      plugin: "nav2_behaviors/Spin"
+    backup:
+      plugin: "nav2_behaviors/BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors/DriveOnHeading"
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    global_frame: odom
+    robot_base_frame: base_link_fake   # 与 local/global costmap、controller 保持一致（哨兵云台系）
+    transform_tolerance: 3.0           # 0.1 → 3.0（实测 gicp 的 map→odom 落后 2.05 s）
+    use_sim_time: True
+    simulate_ahead_time: 1.0
+    max_rotational_vel: 3.0
+    min_rotational_vel: 0.4
+    rotational_acc_lim: 3.0
+map_server:
+  ros__parameters:
+    use_sim_time: True
+    # 必须保留该键：nav2 的 RewrittenYaml 只会替换“已存在的键”，launch 会把实际地图路径写进来
+    yaml_filename: ""
+
+velocity_smoother:
+  ros__parameters:
+    use_sim_time: True
+    smoothing_frequency: 20.0
+    scale_velocities: False
+    feedback: "OPEN_LOOP"
+    # ★ 2026-10-31：安全限速。实测（headless）给 1.5 m 目标时车 10 s 就跑过 4 m、
+    #   一路冲到 27 m 外，LIO/gicp 全部发散 ⇒ 先把速度上限压到 0.6 m/s / 1.0 rad/s，
+    #   让"到点判定"有机会接住。调通后可按需放宽。
+    # ★ 2026-11-08（用户要求）：与规划器/控制器对齐 —— 不再压到 0.6
+    #   规划器 max_speed=1.5、控制器 max_vel=1.5 / max_w=3.0 ⇒ smoother 放到同一档
+    max_velocity: [3.0, 3.0, 3.0]
+    min_velocity: [-3.0, -3.0, -3.0]
+    deadband_velocity: [0.0, 0.0, 0.0]
+    velocity_timeout: 1.0
+    # ★ 2026-11-10（用户要求）：**不整形，只透传**。
+    #   速度/时间曲线由 T-DT 的梯形分配 + MinSnap 决定；smoother 再限加速度
+    #   会改动算法已经算好的曲线（该 3 m/s 的地方被拉低）。
+    #   这里把上下限放大到"实际上不生效"，但仍保留一层数值保护。
+    max_accel: [20.0, 20.0, 20.0]
+    max_decel: [-20.0, -20.0, -20.0]
+    odom_topic: "odom"      # T2：LIO 里程计已统一到 /odom
+    odom_duration: 0.1

@@ -1,0 +1,67 @@
+# BIT(minco_controller) —— controller_server 槽位（nav2 控制器插件）
+#
+# 插件类：`minco_controller/MincoMpcController`（基于 qpOASES 的 MINCO MPC）
+#
+# ★ 状态：**实验档**（2026-11-13 新建）。
+#   与 T-DT 档的关键差异（看源码得到的，不是猜）：
+#     · 它订阅 `/opt_path`（自定义 ros_interfaces/MpcPositionCommand）作为 MPC 期望轨迹
+#       —— 这条由 BIT 的 minco_planner 发；两者必须成对使用；
+#     · 它还订阅 `/aft_mapped_to_init`（FAST-LIO 的里程计名）→ 用 `mode:=bit` 时本 launch
+#       会起 topic_tools relay 把 `/localization/odometry` 接过去；
+#     · 它把速度发到 `/cmd_vel_mpc` → 同样用 relay 接到 `/cmd_vel`。
+#   参数名来自源码 declare 的集合（vx_max/ax_max/omega_max/horizon/dt/...）。
+controller_server:
+  ros__parameters:
+    use_sim_time: True
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugin: "progress_checker"
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+
+    # 与 T-DT 档同一个 goal checker（目标取自 /plan 末点）
+    general_goal_checker:
+      plugin: "rm_goal_checker::PlanGoalChecker"
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 3.15
+
+    FollowPath:
+      plugin: "minco_controller/MincoMpcController"
+      # 运动学上限（哨兵：0.456×0.446，麦轮；先用保守值，跑通再放开）
+      vx_max: 2.0
+      vx_min: -1.0
+      vy_max: 2.0
+      vy_min: -2.0
+      ax_max: 4.0
+      ax_min: -4.0
+      ay_max: 4.0
+      ay_min: -4.0
+      omega_max: 3.0
+      omega_min: -3.0
+      alpha_max: 6.0
+      alpha_min: -6.0
+      # MPC 基本量
+      horizon: 20              # 预测步数
+      dt: 0.05                 # 步长 s（20 Hz）
+      fixed_wz: 0.0            # 不强制转向（全向底盘）
+      use_acc_constraints: true
+      use_small_gyro_mode: false
+      deadzone_speed_threshold: 0.02
+      control_delay_compensation: 0.0
+      map_frame: "map"
+      odom_frame: "odom"
+      # 性能日志：跑通前先关掉，避免刷屏
+      performance:
+        enable: false
+        print_enable: false
+        detailed_csv_enable: false
+        odom_sub_debug_enable: false
+        print_period_sec: 5.0

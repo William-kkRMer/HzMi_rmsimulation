@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="chassis">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.000525210630645196 -9.88787776028818E-05 0.0228529229233079"
+        rpy="0 0 0" />
+      <mass
+        value="4.30908483392141" />
+      <inertia
+        ixx="0.00356918503421658"
+        ixy="2.91111233555378E-06"
+        ixz="-1.58536389762567E-13"
+        iyy="0.00315932138586126"
+        iyz="-2.59640985562635E-14"
+        izz="0.00442129535026619" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://chassis_description/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.02 0.02 0.02 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.0295" rpy="0 0 0" />
+      <geometry><box size="0.456 0.446 0.097" /></geometry>
+    </collision>
+  </link>
+  <link
+    name="w1">
+    <inertial>
+      <origin
+        xyz="2.21156426505331E-13 -0.0310131419857252 -5.0563719877772E-14"
+        rpy="0 0 0" />
+      <mass
+        value="0.0968885662811193" />
+      <inertia
+        ixx="0.000142054002080831"
+        ixy="-1.76056439722202E-16"
+        ixz="6.85752968055349E-16"
+        iyy="0.000270826964366967"
+        iyz="4.04461765349949E-17"
+        izz="0.000142054002078526" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://chassis_description/meshes/w1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.22 0.22 0.22 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.032 0" rpy="1.5707963 0 0" />
+      <geometry><cylinder radius="0.058" length="0.03" /></geometry>
+    </collision>
+  </link>
+  <joint
+    name="w1"
+    type="fixed">
+    <origin
+      xyz="0.1615 -0.10895 -0.04"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="w1" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="w2">
+    <inertial>
+      <origin
+        xyz="2.21295204383409E-13 -0.0310131419857247 -5.06504560515708E-14"
+        rpy="0 0 0" />
+      <mass
+        value="0.0968885662811196" />
+      <inertia
+        ixx="0.000142054002080838"
+        ixy="-1.7562802007376E-16"
+        ixz="6.85790224897307E-16"
+        iyy="0.000270826964366966"
+        iyz="4.0237417683157E-17"
+        izz="0.000142054002078533" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://chassis_description/meshes/w2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.22 0.22 0.22 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 -0.032 0" rpy="1.5707963 0 0" />
+      <geometry><cylinder radius="0.058" length="0.03" /></geometry>
+    </collision>
+  </link>
+  <joint
+    name="w2"
+    type="fixed">
+    <origin
+      xyz="0.1615 0.17205 -0.04"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="w2" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="w3">
+    <inertial>
+      <origin
+        xyz="-2.21350715534641E-13 0.0310131419857251 -5.07198449906099E-14"
+        rpy="0 0 0" />
+      <mass
+        value="0.096888566281119" />
+      <inertia
+        ixx="0.000142054002080834"
+        ixy="-1.75804051692341E-16"
+        ixz="-6.8568793984376E-16"
+        iyy="0.000270826964366966"
+        iyz="-4.0245017491951E-17"
+        izz="0.000142054002078529" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://chassis_description/meshes/w3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.22 0.22 0.22 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0.032 0" rpy="1.5707963 0 0" />
+      <geometry><cylinder radius="0.058" length="0.03" /></geometry>
+    </collision>
+  </link>
+  <joint
+    name="w3"
+    type="fixed">
+    <origin
+      xyz="-0.1615 -0.17205 -0.04"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="w3" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="w4">
+    <inertial>
+      <origin
+        xyz="-2.21156426505331E-13 0.0310131419857252 -5.0563719877772E-14"
+        rpy="0 0 0" />
+      <mass
+        value="0.0968885662811193" />
+      <inertia
+        ixx="0.000142054002080831"
+        ixy="-1.76056144471508E-16"
+        ixz="-6.85753899441331E-16"
+        iyy="0.000270826964366967"
+        iyz="-4.04759497027718E-17"
+        izz="0.000142054002078526" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://chassis_description/meshes/w4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.22 0.22 0.22 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0.032 0" rpy="1.5707963 0 0" />
+      <geometry><cylinder radius="0.058" length="0.03" /></geometry>
+    </collision>
+  </link>
+  <joint
+    name="w4"
+    type="fixed">
+    <origin
+      xyz="-0.1615 0.10895 -0.04"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="w4" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+
+  <!-- 仿真附加（原 URDF 没有；几何/惯量/碰撞一律不动）-->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <origin xyz="0 0 0.04" rpy="0 0 0"/>
+    <parent link="base_link"/><child link="imu_link"/>
+  </joint>
+  <gazebo reference="imu_link">
+    <sensor name="chassis_imu" type="imu">
+      <always_on>true</always_on><update_rate>100</update_rate>
+      <plugin name="imu_plugin" filename="libgazebo_ros_imu_sensor.so">
+        <ros><namespace>/</namespace><remapping>~/out:=/livox/imu</remapping></ros>
+        <frame_name>imu_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+  <xacro:include filename="$(find ros2_livox_simulation)/urdf/mid360.xacro"/>
+  <!-- ★ 2026-11-04：雷达**安装倾角**变成 xacro 参数（默认 0 = 平放）。
+       真车是 30° 斜装（robot11 的 xacro 把 roll 烘进 link），仿真底盘原来写死 0°
+       ⇒ 用户在 gz 里看到"雷达不是倾斜放置的"。现在：
+         ros2 launch ... lidar_tilt_rpy:="-0.5236 0 0"
+       注意：**必须同时**把 gz 侧传感器 link 的 rpy 钉成同一个值（launch 的 tilt_rpy），
+       否则 TF（URDF）与 gz 里的点云朝向会不一致 ⇒ LIO 直接把倾斜当成姿态误差。 -->
+  <xacro:arg name="rpy" default="0 0 0"/>
+  <xacro:mid360 name="livox_frame" parent="base_link" topic="/livox/lidar">
+    <origin xyz="0 0 0.09" rpy="$(arg rpy)"/>
+  </xacro:mid360>
+  <gazebo>
+    <plugin name="mecanum_controller" filename="libgazebo_ros_planar_move.so">
+      <ros><namespace>/</namespace>
+        <remapping>cmd_vel:=cmd_vel_chassis</remapping>
+        <remapping>odom:=odom_ground_truth</remapping></ros>
+      <update_rate>100</update_rate><publish_rate>10</publish_rate>
+      <publish_odom>true</publish_odom><publish_odom_tf>false</publish_odom_tf>
+      <odometry_frame>odom</odometry_frame><robot_base_frame>base_link</robot_base_frame>
+      <covariance_x>0.0001</covariance_x><covariance_y>0.0001</covariance_y>
+      <covariance_yaw>0.01</covariance_yaw>
+    </plugin>
+  </gazebo>
+
+  <gazebo reference="base_link"><material>Gazebo/Black</material></gazebo>
+  <!-- ★ 2026-10-31：轮子低摩擦（0.02）。planar_move 直接驱动车体，
+       轮子抓地会产生俯仰力矩 ⇒ **翻车**；也会把 yaw 锁死 ⇒ 转不动。
+       低摩擦后轮子只做视觉滚动。 -->
+  <gazebo reference="w1">
+    <material>Gazebo/DarkGrey</material>
+    <mu1>0.02</mu1><mu2>0.02</mu2>
+  </gazebo>
+  <!-- ★ 2026-10-31：轮子低摩擦（0.02）。planar_move 直接驱动车体，
+       轮子抓地会产生俯仰力矩 ⇒ **翻车**；也会把 yaw 锁死 ⇒ 转不动。
+       低摩擦后轮子只做视觉滚动。 -->
+  <gazebo reference="w2">
+    <material>Gazebo/DarkGrey</material>
+    <mu1>0.02</mu1><mu2>0.02</mu2>
+  </gazebo>
+  <!-- ★ 2026-10-31：轮子低摩擦（0.02）。planar_move 直接驱动车体，
+       轮子抓地会产生俯仰力矩 ⇒ **翻车**；也会把 yaw 锁死 ⇒ 转不动。
+       低摩擦后轮子只做视觉滚动。 -->
+  <gazebo reference="w3">
+    <material>Gazebo/DarkGrey</material>
+    <mu1>0.02</mu1><mu2>0.02</mu2>
+  </gazebo>
+  <!-- ★ 2026-10-31：轮子低摩擦（0.02）。planar_move 直接驱动车体，
+       轮子抓地会产生俯仰力矩 ⇒ **翻车**；也会把 yaw 锁死 ⇒ 转不动。
+       低摩擦后轮子只做视觉滚动。 -->
+  <gazebo reference="w4">
+    <material>Gazebo/DarkGrey</material>
+    <mu1>0.02</mu1><mu2>0.02</mu2>
+  </gazebo>
+
+</robot>

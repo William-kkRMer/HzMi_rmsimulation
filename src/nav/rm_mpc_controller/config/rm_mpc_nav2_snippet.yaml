@@ -1,0 +1,21 @@
+# 把 controller_server 的 FollowPath 换成 MPC（其余 nav2 配置不变）
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    controller_plugins: ["FollowPath"]
+    FollowPath:
+      plugin: "rm_mpc_controller/MpcController"
+      # ---- MPC ----
+      dt: 0.05
+      horizon: 20
+      vmax: 2.0
+      amax: 4.0
+      w_pos: 80.0
+      w_vel: 20.0
+      w_u: 4.0
+      w_slack: 2000.0
+      # ---- 参考与走廊 ----
+      v_ref: 1.0                 # 沿路径的参考速度（m/s）
+      corridor_half_width: 0.35 # 走廊半宽（m）
+      k_theta: 1.5              # 航向误差 → 角速度增益
+      wmax: 6.0

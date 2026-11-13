@@ -1,0 +1,38 @@
+import os
+from glob import glob
+
+from setuptools import setup
+
+package_name = 'cloud_accumulator'
+
+setup(
+    name=package_name,
+    version='0.1.0',
+    packages=[package_name],
+    data_files=[
+        ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
+        (os.path.join('share', package_name), ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='HzMi',
+    maintainer_email='dev@hzmi.local',
+    description='3D 点云累加器：map 系累积 + 按名字存档/续建（含场地隔离守卫）',
+    license='MIT',
+    tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'cloud_accumulator_node = cloud_accumulator.accumulator_node:main',
+            # ★ 2026-10-29：复刻实车 Livox 驱动器的 extrinsic_parameter（斜点云 -> 水平 livox_frame）
+            'livox_cloud_extrinsic = cloud_accumulator.livox_extrinsic_node:main',
+            # ★ 2026-10-30：按几何盒子裁掉车体自身的点（PCL CropBox 等价物），治 p2l 高度带误伤矮墙
+            'cloud_crop = cloud_accumulator.cloud_crop_node:main',
+            # ★ 2026-11-03：Livox CustomMsg → LIO-SAM 的 Velodyne 格式（xyz/intensity/ring/time）
+            'livox_to_lio_sam = cloud_accumulator.livox_to_lio_sam_node:main',
+            # ★ 2026-11-03（goal 轮 5）：反方向 —— PointCloud2 → CustomMsg
+            #   （gz 原生 gpu_lidar / 任何 PointCloud2 驱动都能并进 /livox/lidar 链路）
+            'pc2_to_custom = cloud_accumulator.pc2_to_custom_node:main',
+        ],
+    },
+)

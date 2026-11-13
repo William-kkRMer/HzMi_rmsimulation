@@ -1,0 +1,98 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /MapGlobal1
+        - /Keyframe1
+        - /Trajectory1
+      Splitter Ratio: 0.5
+    Tree Height: 500
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 40
+      Color: 160; 160; 164
+      Alpha: 0.3
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: false
+      Marker Scale: 0.8
+      Frame Timeout: 15
+    - Class: rviz_default_plugins/PointCloud2
+      Name: MapGlobal1
+      Enabled: true
+      Topic:
+        Value: /lio_sam/mapping/map_global
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.02
+      Color Transformer: AxisColor
+      Axis: Z
+      Alpha: 1
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Keyframe1
+      Enabled: true
+      Topic:
+        Value: /lio_sam/mapping/cloud_registered
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: FlatColor
+      Color: 0; 255; 0
+    - Class: rviz_default_plugins/PointCloud2
+      Name: MapLocal1
+      Enabled: true
+      Topic:
+        Value: /lio_sam/mapping/map_local
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Alpha: 0.6
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Trajectory1
+      Enabled: true
+      Topic:
+        Value: /lio_sam/mapping/trajectory
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Style: Spheres
+      Size (m): 0.08
+      Color Transformer: FlatColor
+      Color: 255; 60; 60
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 30
+    Fixed Frame: odom
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 12
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.5
+      Pitch: 0.6
+      Yaw: 0.8
+      Name: Current View
+      Target Frame: odom
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400

@@ -1,0 +1,28 @@
+[submodule "src/driver/rm_driver/livox_ros_driver2"]
+	path = src/driver/rm_driver/livox_ros_driver2
+	url = https://gitee.com/SMBU-POLARBEAR/livox_ros_driver2_humble.git
+[submodule "src/nav/rm_navigation/teb_local_planner"]
+	path = src/nav/rm_navigation/teb_local_planner
+	url = https://github.com/rst-tu-dortmund/teb_local_planner.git
+[submodule "src/nav/rm_navigation/costmap_converter"]
+	path = src/nav/rm_navigation/costmap_converter
+	url = https://github.com/LihanChen2004/costmap_converter.git
+[submodule "src/localization/rm_localization/FAST_LIO"]
+	path = src/localization/rm_localization/FAST_LIO
+	url = https://github.com/William-kk985/FAST_LIO.git
+[submodule "src/localization/rm_localization/point_lio"]
+	path = src/localization/rm_localization/point_lio
+	url = https://github.com/William-kk985/Point-LIO.git
+[submodule "third_party/fast_lio"]
+	path = third_party/fast_lio
+	url = https://github.com/hku-mars/FAST_LIO
+[submodule "third_party/point_lio"]
+	path = third_party/point_lio
+	url = https://github.com/hku-mars/Point-LIO
+[submodule "third_party/cartographer"]
+	path = third_party/cartographer
+	url = https://github.com/cartographer-project/cartographer
+[submodule "third_party/nav2"]
+	path = third_party/nav2
+	url = https://github.com/ros-navigation/navigation2.git
+	branch = humble

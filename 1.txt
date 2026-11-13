@@ -1,0 +1,219 @@
+################################################################################
+# RMUC2027 —— 建图/导航 Runbook（2026-11-03，v2 完善版）
+#
+# 设计原则（2026-11-03 拍板）
+#   · 2D 与 3D **分开做**：2D 只由 slam_toolbox 出 PGM；3D 只由 LIO-SAM 出 PCD
+#   · 两者唯一耦合 = `map` 系是**出生点相对系**（spawn 固定）⇒ 产物天然同帧
+#   · 方向只有 3D→2D（投影）；2D→3D 不可能（PGM 无高度）
+#   · 命名全程一致（见下），否则 nav 找不到图
+#
+# 命名约定（**launch 里 `map_name` 决定一切**）
+#   2D : map/<map_name>.pgm / .yaml / .posegraph / .data
+#   3D : PCD/<map_name>.pcd        （launch 的 pcd_path = PCD/<map_name>.pcd，已核对 launch:4263）
+#   SC : PCD/<map_name>_sc_db.npz
+#   本次统一用 map_name := RMUC2027_v5
+################################################################################
+
+cd ~/HzMi_rmsimulation && source install/setup.bash
+
+
+# ---------------------------- 产物归属（谁消费谁）----------------------------
+#   PGM(RMUC2027_v2.*) ── nav 必需：map_server → 全局代价图 → SMAC2D 规划；
+#                         2D 定位时还给 AMCL 匹配。**3D 模块不消费它。**
+#                       已实测：门洞 100% 自由、走廊 86.8% 自由、格式 P5/三态合规。
+#   PCD(*)             ── 只有 3D 定位用：small_gicp/gicp 精配；SC 库只对它有意义。
+#   SC 库(.npz)        ── 只有 scan_context 用（给 3D 定位一个粗初值）。
+#   两条线可并行：2D 现在就能导航；3D 建图当独立一条线慢慢做。
+# ---------------------------------------------------------------------------
+
+
+# ##############################################################################
+# A · 2D 建图（slam_toolbox）
+# ##############################################################################
+# 只开 Gazebo + LIO(供 odom/TF) + slam_toolbox；**不开** LIO-SAM / cloud_accumulator。
+
+# 2D 建图用 15000 射线（RTF≈0.69；2D 不需要堆点）
+sed -i 's/name="samples" value="[0-9]*"/name="samples" value="15000"/' \
+  src/simulation/rm_simulation/livox_laser_simulation_RO2/urdf/mid360.xacro
+
+ros2 launch rm_nav_bringup bringup_sim.launch.py \
+  world:=RMUC2027 map_name:=RMUC2027_v5 mode:=mapping \
+  lio:=small_point_lio gravity:=tf mapper:=slam_toolbox \
+  ground:=patchwork robot:=chassis \
+  gui:=True gazebo_offline:=True nav_rviz:=True spin_speed:=0.0
+
+# 开一圈：慢速、**少原地旋转**（slam_toolbox 对旋转最敏感）。
+
+# ---- 保存：**车停稳、launch 仍开着**时另开终端执行 ----
+#      -f 的名字必须 == map_name（否则后面 nav 的 map_yaml 对不上）
+ros2 run nav2_map_server map_saver_cli -f src/bringup/rm_nav_bringup/map/RMUC2027_v5
+tools/scripts/mapping/map_archive.sh save --name RMUC2027_v5 --world RMUC2027
+
+# ---- 验收 2D 图 ----
+python3 tools/scripts/mapping/compare_2d_maps.py \
+  src/bringup/rm_nav_bringup/map/RMUC2027_v2.pgm src/bringup/rm_nav_bringup/map/RMUC2027_v5.pgm
+#   看墙有没有变厚/重影；差异越小越好（v2 = 已知可用那版）
+#   另可查关键通道是否通 —— 见文末「附 B · 通道抽查」
+
+
+# ##############################################################################
+# B · 3D 建图（LIO-SAM，带回环）—— 独立的一次跑，只出 PCD
+# ##############################################################################
+# slam_toolbox 仍要起（本仓 mode:=mapping 需要它提供 map→odom，否则栈不完整），
+# 但 LIO-SAM 的 TF 走 /lio_sam/tf*，**不读也不写**主栈 map→odom。
+
+# 3D 用 30000 射线（点多；RTF≈0.49，慢但可接受）
+sed -i 's/name="samples" value="[0-9]*"/name="samples" value="30000"/' \
+  src/simulation/rm_simulation/livox_laser_simulation_RO2/urdf/mid360.xacro
+export LIVOX_INTRA_FRAME_TIME=1        # ★ 逐点时间（必须在**起仿真前** export，否则点云不带 offset_time）
+
+# ---- 终端 1：仿真 + 2D 后端（只为栈完整/TF；本段不保存 2D）----
+ros2 launch rm_nav_bringup bringup_sim.launch.py \
+  world:=RMUC2027 map_name:=RMUC2027_v5_3d mode:=mapping \
+  lio:=small_point_lio gravity:=tf mapper:=slam_toolbox \
+  ground:=patchwork robot:=chassis \
+  gui:=True gazebo_offline:=True nav_rviz:=True spin_speed:=0.0
+
+# ---- 终端 2：LIO-SAM（自己延迟 6 s 启动，等 spawn 落定 ⇒ map 原点不被 0.2 m 下落污染）----
+export LIVOX_INTRA_FRAME_TIME=1
+ros2 launch lio_sam sim.launch.py
+
+# ---- 终端 3：体检（全绿再开圈）----
+ros2 topic hz /livox/lidar          # ≈4.9 Hz（30000）／≈6.9 Hz（15000）
+ros2 topic hz /lio_sam/points       # 应≈上面那个值；差太多 ⇒ 适配节点跟不上
+ros2 topic hz /imu/data             # ≥100 Hz
+ros2 topic hz /lio_sam/odometry/imu # 有输出 ⇒ IMU 预积分在跑
+
+# ---- 终端 3（续）：录 bag（给 SC 建库；必须与 3D 同一次跑）----
+mkdir -p ~/HzMi_rmsimulation/bag
+ros2 bag record -o ~/HzMi_rmsimulation/bag/raw3d_$(date +%Y%m%d_%H%M) \
+  /cloud_registered /tf /tf_static /scan /odom
+
+# ---- 开一圈：慢速、单趟、尽量走满（来回走必双层）----
+
+# ---- 保存 3D（另开终端）----
+# ⚠️ LIO-SAM 会**先删掉整个 savePCDDirectory 再重建**（上游行为），别指向重要目录
+ros2 service call /lio_sam/save_map lio_sam/srv/SaveMap "{resolution: 0.05}"
+#   → $HOME/HzMi_rmsimulation/export/lio_sam_pcd/{CornerMap,SurfMap,trajectory,transformations}.pcd
+
+# ---- 合并两份特征云（LIO-SAM 存的是 Corner + Surf 两份，不是一份）----
+python3 tools/scripts/diag/pcd_merge.py \
+  export/lio_sam_pcd/merged.pcd \
+  export/lio_sam_pcd/CornerMap.pcd export/lio_sam_pcd/SurfMap.pcd --voxel 0.05
+
+# ---- 验收 3D（不达标就别改名，先查根因）----
+python3 tools/scripts/diag/pcd_quality.py export/lio_sam_pcd/merged.pcd
+#   判据：地面厚度 < 0.10 m、双层比例 < 20%（旧图对照：0.357 m / 83.5%）
+python3 tools/scripts/diag/pcd_preview.py export/lio_sam_pcd/merged.pcd --out export/lio_sam_preview
+#   看 export/lio_sam_preview/xz.png：地面是"一条线"还是"两条线"
+python3 tools/scripts/diag/pcd2ply.py export/lio_sam_pcd/merged.pcd
+CloudCompare export/lio_sam_pcd/merged.ply        # 可选：与旧图做 Cloud/Cloud Dist
+
+# ---- 达标后落盘成代码认的名字（launch 的 pcd_path = PCD/<map_name>.pcd）----
+cp export/lio_sam_pcd/merged.pcd src/bringup/rm_nav_bringup/PCD/RMUC2027_v5.pcd
+
+# ---- 用**同一份 bag** 建 SC 库 ----
+BAG=$(ls -dt ~/HzMi_rmsimulation/bag/raw3d_* | head -1); echo "用 bag: $BAG"
+ros2 run scan_context_relocalizer build_sc_db -- \
+  --bag "$BAG" --world RMUC2027 \
+  --out src/bringup/rm_nav_bringup/PCD/RMUC2027_v5_sc_db.npz --min-move 0.35
+
+
+# ##############################################################################
+# C · 可选：让 3D 直接生成 2D（"3D 权威"路线，与 A 段**二选一**）
+# ##############################################################################
+# ⚠️ 输出前缀必须和 A 段不同（否则覆盖 A 段的图，无法对比）
+python3 tools/scripts/mapping/pcd_to_nav2_map.py \
+  --pcd src/bringup/rm_nav_bringup/PCD/RMUC2027_v5.pcd \
+  --out src/bringup/rm_nav_bringup/map/RMUC2027_v5_from3d
+
+# 对比后再决定用哪张（差异小 ⇒ 可用 3D 派生版，对坡更"懂"）
+python3 tools/scripts/mapping/compare_2d_maps.py \
+  src/bringup/rm_nav_bringup/map/RMUC2027_v5.pgm src/bringup/rm_nav_bringup/map/RMUC2027_v5_from3d.pgm
+
+
+# ##############################################################################
+# D · 导航
+# ##############################################################################
+# 导航回 15000 射线（RTF 0.69）
+sed -i 's/name="samples" value="[0-9]*"/name="samples" value="15000"/' \
+  src/simulation/rm_simulation/livox_laser_simulation_RO2/urdf/mid360.xacro
+
+# ---- D1. 2D 定位（最稳，先跑这档）----
+#   gravity:=tf 与 A/B 段一致（odom_level 的 z 原点=地面）。
+#   若你平时用 gravity:=lio：2D 图/规划不受影响，但 3D 定位的 z 有 0.138 m 口径差
+#   ⇒ **3D 定位请统一 gravity:=tf**。
+ros2 launch rm_nav_bringup bringup_sim.launch.py \
+  world:=RMUC2027 map_name:=RMUC2027_v5 mode:=nav \
+  lio:=small_point_lio gravity:=tf localization:=beluga \
+  nav:=mppi planner:=smac2d ground:=patchwork \
+  local_obstacle:=stvl global_obstacle:=stvl robot:=chassis \
+  spin_speed:=0.0 nav_rviz:=True gui:=True gazebo_offline:=True \
+  map_yaml:=$HOME/HzMi_rmsimulation/src/bringup/rm_nav_bringup/map/RMUC2027_v5.yaml
+
+# ---- D2. 3D 定位（B 段验收通过后用）----
+#   读 PCD/<map_name>.pcd + PCD/<map_name>_sc_db.npz（已核对 launch 的 name_v 语义）
+ros2 launch rm_nav_bringup bringup_sim.launch.py \
+  world:=RMUC2027 map_name:=RMUC2027_v5 mode:=nav \
+  lio:=small_point_lio gravity:=tf localization:=small_gicp \
+  global_relocalizer:=scan_context \
+  nav:=mppi planner:=smac2d ground:=patchwork \
+  local_obstacle:=stvl global_obstacle:=stvl robot:=chassis \
+  spin_speed:=0.0 nav_rviz:=True gui:=True gazebo_offline:=True \
+  map_yaml:=$HOME/HzMi_rmsimulation/src/bringup/rm_nav_bringup/map/RMUC2027_v5.yaml
+
+
+# ##############################################################################
+# 附 A · 诊断
+# ##############################################################################
+python3 tools/scripts/diag/odom_error.py                     # LIO 漂移/跳变（对比 /odom_ground_truth）
+python3 tools/scripts/diag/pcd_quality.py <pcd>             # 3D 四个硬指标
+python3 tools/scripts/diag/pcd_preview.py <pcd> --out <dir> # 出 PNG（不用装查看器）
+python3 tools/scripts/diag/pcd2ply.py <pcd>                 # 转 PLY（给 CloudCompare）
+python3 tools/scripts/diag/perception_watch.py              # 感知在 0~18cm 标了什么（2Hz+CSV）
+python3 tools/scripts/diag/costmap_probe.py --at -1.2 4.1   # 定点查世界坐标处的代价
+ros2 topic hz /livox/lidar                                  # = 10Hz × RTF
+ros2 run tf2_ros tf2_echo odom odom_level                   # 期望恒定 [0,0,-0.138]
+ros2 run tf2_ros tf2_echo map odom                          # 这个**会**变（SLAM/AMCL 在修正，正常）
+
+
+# ##############################################################################
+# 附 B · 通道抽查（2D 图关键通道是否通）
+# ##############################################################################
+python3 - <<'PY'
+import numpy as np, yaml
+y=yaml.safe_load(open('src/bringup/rm_nav_bringup/map/RMUC2027_v5.yaml'))
+with open('src/bringup/rm_nav_bringup/map/'+y['image'],'rb') as f:
+    f.readline(); tok=[]
+    while len(tok)<3:
+        ln=f.readline()
+        if ln.startswith(b'#'): continue
+        tok+=ln.split()
+    w,h=int(tok[0]),int(tok[1]); img=np.frombuffer(f.read(w*h),np.uint8).reshape(h,w)
+res=y['resolution']; ox,oy=y['origin'][:2]
+def probe(name,x0,x1,y0,y1):
+    i0=int((x0-ox)/res); i1=int((x1-ox)/res)
+    j0=int((y0-oy)/res); j1=int((y1-oy)/res)
+    sub=img[max(0,h-1-j1):h-j0, i0:i1]
+    if sub.size==0: print('  %-22s 窗口越界' % name); return
+    print('  %-22s 占用 %5.1f%%  自由 %5.1f%%' % (name,(sub<100).mean()*100,(sub>=200).mean()*100))
+print('== 关键通道（黑=占用/白=自由）==')
+probe('门洞(x-1.56..-0.88)', -1.56,-0.88, 3.9,4.3)
+probe('走廊(y-6.68..-7.48)', -5.4,-4.6, -7.48,-6.68)
+probe('出生点附近', -0.5,0.5, -0.5,0.5)
+PY
+
+
+# ##############################################################################
+# 附 C · 常见故障
+# ##############################################################################
+# | 现象                              | 原因/处理                                                       |
+# |-----------------------------------|-----------------------------------------------------------------|
+# | LIO-SAM 报 Unknown sensor type    | params 没生效；确认 sim.launch.py 默认加载 params_sim.yaml       |
+# | /lio_sam/points 没数据            | 适配节点没收到 CustomMsg；查 /livox/lidar 是否在发               |
+# | 点云 offset_time 全 0             | 忘了在**起仿真前** export LIVOX_INTRA_FRAME_TIME=1                |
+# | /livox/lidar 只有 ~3.8 Hz         | 30000 太重；回 15000 或 20000                                    |
+# | map_saver 报错找不到 /map         | 图还没出来；等 map_update_interval（2027 槽 1.5 s）               |
+# | nav 起不来：map_yaml 不存在       | map_saver -f 的名字与 map_name/map_yaml 不一致                    |
+# | D2 起不来/无先验                  | PCD/<map_name>.pcd 或 _sc_db.npz 不存在（B 段没做完）             |
+# | 保存 3D 后目录被清空              | 正常：LIO-SAM 先删 savePCDDirectory 再重建                       |

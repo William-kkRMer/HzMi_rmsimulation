@@ -467,7 +467,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 | **哈工大 2024 哨兵规划** | <https://github.com/zzt-180/sentry_planning> | 早期参考 |
 | **rose_navigation** | <https://github.com/hyheiyue/rose_navigation> | 今年参考/学习 |
 | **sentry26** | <https://github.com/xiix666/sentry26> | 今年参考/学习 |
-| **HWSentryNav26** | <https://github.com/Polyacetone/HWSentryNav26> | 今年参考/学习 |
+| **HWSentryNav26**（浙江大学） | <https://github.com/Polyacetone/HWSentryNav26> | 今年参考/学习 |
 | **autosentry**（南京航空航天大学） | <https://github.com/AbabalaT/autosentry> | **南航 2023 赛季开源**，早期参考 |
 
 **约定**：本表只说明"来源与用途"，不声称衍生关系；具体到包级/函数级的对照见

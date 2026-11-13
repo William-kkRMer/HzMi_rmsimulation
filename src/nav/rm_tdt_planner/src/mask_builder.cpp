@@ -19,18 +19,26 @@
 class MaskBuilder : public rclcpp::Node {
  public:
   MaskBuilder() : Node("plan_mask_builder") {
-    res_ = declare_parameter("resolution", 0.05);
-    w_ = declare_parameter("width", 560);
-    h_ = declare_parameter("height", 313);
-    ox_ = declare_parameter("origin_x", -19.9);
-    oy_ = declare_parameter("origin_y", -8.89);
     zmin_ = declare_parameter("z_min", 0.10);
     zmax_ = declare_parameter("z_max", 1.20);
     frame_ = declare_parameter("frame_id", std::string("map"));
     const auto in_topic = declare_parameter("input_topic", std::string("/segmentation/obstacle"));
-    // ★ 可直接给地图 yaml：自动取 resolution/origin/image 尺寸，省掉四个手填参数
+    // ★★★ 2026-11-14：**map_yaml 改为必填**。
+    //   原来 width/height/origin_x/origin_y 有硬编码兜底（值对应 RMUC2027_v2 那张图）；
+    //   换地图时忘传 map_yaml ⇒ /plan_mask 元数据与规划图不一致
+    //   ⇒ planner 静默丢弃动态障碍 ⇒ 极难排查。现在没有 yaml 直接 FATAL 退出。
     const auto map_yaml = declare_parameter("map_yaml", std::string(""));
-    if (!map_yaml.empty()) loadMapYaml(map_yaml);
+    if (map_yaml.empty()) {
+      RCLCPP_FATAL(get_logger(),
+          "[plan_mask] 必须提供 map_yaml（几何必须与规划图一致，已无内置默认尺寸）。例："
+          "ros2 run rm_tdt_planner mask_builder --ros-args "
+          "-p map_yaml:=$PWD/src/bringup/rm_nav_bringup/map/RMUC2027_cad.yaml");
+      throw std::runtime_error("mask_builder: map_yaml is required");
+    }
+    if (!loadMapYaml(map_yaml)) {
+      RCLCPP_FATAL(get_logger(), "[plan_mask] map_yaml 读取失败：%s ⇒ 退出（几何未知不能猜）", map_yaml.c_str());
+      throw std::runtime_error("mask_builder: cannot load map_yaml");
+    }
 
     grid_.assign(w_ * h_, 0);
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -45,9 +53,9 @@ class MaskBuilder : public rclcpp::Node {
   }
 
  private:
-  void loadMapYaml(const std::string& path) {
+  bool loadMapYaml(const std::string& path) {
     std::ifstream f(path);
-    if (!f) { RCLCPP_WARN(get_logger(), "[plan_mask] 读不到 %s，用参数", path.c_str()); return; }
+    if (!f) { RCLCPP_ERROR(get_logger(), "[plan_mask] 读不到 %s", path.c_str()); return false; }
     std::string line, image;
     while (std::getline(f, line)) {
       std::istringstream is(line);
@@ -74,15 +82,28 @@ class MaskBuilder : public rclcpp::Node {
       } else if (k.rfind("image:", 0) == 0) { is >> image; }
     }
     // 从 PGM 头取宽高（本仓库的 2D 图都是 P5）
+    if (image.empty()) {
+      RCLCPP_ERROR(get_logger(), "[plan_mask] yaml 缺 image 字段：%s", path.c_str());
+      return false;
+    }
     const std::string base = path.substr(0, path.find_last_of('/') + 1);
     std::ifstream img(base + image, std::ios::binary);
-    if (img) {
+    if (!img) {
+      RCLCPP_ERROR(get_logger(), "[plan_mask] 打不开图 %s", (base + image).c_str());
+      return false;
+    }
+    {
       std::string magic; int w = 0, h = 0, mx = 0;
       img >> magic >> w >> h >> mx;
-      if (magic == "P5" && w > 0 && h > 0) { w_ = w; h_ = h; }
+      if (magic != "P5" || w <= 0 || h <= 0) {
+        RCLCPP_ERROR(get_logger(), "[plan_mask] 不是 P5 PGM：%s", (base + image).c_str());
+        return false;
+      }
+      w_ = w; h_ = h;
     }
-    RCLCPP_INFO(get_logger(), "[plan_mask] 从 yaml 读取: %dx%d @ %.3f m, origin (%.2f, %.2f)",
-                w_, h_, res_, ox_, oy_);
+    RCLCPP_INFO(get_logger(), "[plan_mask] 从 yaml 读取: %dx%d @ %.3f m, origin (%.2f, %.2f) [%s]",
+                w_, h_, res_, ox_, oy_, path.c_str());
+    return true;
   }
 
   void onCloud(const sensor_msgs::msg::PointCloud2::SharedPtr& msg) {
@@ -146,7 +167,13 @@ class MaskBuilder : public rclcpp::Node {
 
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<MaskBuilder>());
+  try {
+    rclcpp::spin(std::make_shared<MaskBuilder>());
+  } catch (const std::exception& e) {
+    RCLCPP_FATAL(rclcpp::get_logger("mask_builder"), "启动失败: %s", e.what());
+    rclcpp::shutdown();
+    return 1;
+  }
   rclcpp::shutdown();
   return 0;
 }

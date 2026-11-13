@@ -463,7 +463,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 | **small_point_lio** | <https://github.com/yancey2023/small_point_lio> | **LIO 备选**（`lio:=small_point_lio`） |
 | **COD 2026 导航** | <https://gitee.com/codnavgation/cod_-rm2026_-navigation> | **只读参考**（`third_party/cod_nav_2026`，不参与构建） |
 | **中南 FYT**（CSU-RM-Sentry） | <https://github.com/baiyeweiguang/CSU-RM-Sentry> | nav2 框架沿革来源（上游作者在其基础上适配仿真） |
-| **TUP-Sentry-Framework**（同济 TUP） | <https://github.com/tup-robomaster/TUP2024-Sentry-Framework><br><https://github.com/tup-robomaster/TUP2023-Sentry-Framework> | 早期参考/学习（框架与导航分层思路） |
+| **TUP-Sentry-Framework**（沈阳航空航天大学 TUP） | <https://github.com/tup-robomaster/TUP2024-Sentry-Framework><br><https://github.com/tup-robomaster/TUP2023-Sentry-Framework> | 早期参考/学习（框架与导航分层思路） |
 | **哈工大 2024 哨兵规划** | <https://github.com/zzt-180/sentry_planning> | 早期参考 |
 | **rose_navigation** | <https://github.com/hyheiyue/rose_navigation> | 今年参考/学习 |
 | **sentry26** | <https://github.com/xiix666/sentry26> | 今年参考/学习 |

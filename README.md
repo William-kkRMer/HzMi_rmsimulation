@@ -426,6 +426,17 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 > `src/nav/rm_tdt_planner/src/tdt/` 下的副本 + `planner.cpp` / `nav_l0_perception.cpp`（适配层）、
 > `src/nav/rm_tdt_local_controller/src/controller.cpp`（控制适配）。
 
+### 6. 关于去畸变
+
+除了**仿真现有的**点云，以及 **Point-LIO / FAST-LIO 这类本身就带逐点去畸变**的算法
+（用帧内 IMU 位姿做运动补偿）之外，笔者还另外研制了一套**基于下位机数据**的去畸变办法：
+用底盘/MCU 上传的高频位姿（轮式里程计、底盘 IMU）来补偿单帧点云内的运动畸变，
+**思路来源于 2D 导航项目**。这套办法**目前还没有进仓库**——
+未来会在实车上考察、研究，**确认合适后再加入**。
+
+> 顺带说明：仿真里帧内运动本来近乎为零（`livox_points_plugin.cpp` 的 `offset_time` 默认是 0），
+> 所以"去畸变做得好不好"在仿真里基本验证不出来——这也是第 2 点里它"表现并不好"的另一面。
+
 ## 致谢（不分先后）
 
 本仓的导航算法框架**基于 [SMBU 北极熊（PolarBear）2024 赛季开源](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation) 修改**而来。

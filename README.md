@@ -379,19 +379,15 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 ## 后记
 
-> 这个仿真包也是我学习的一个记录，也是我学习的一个起点。
+> **（这里留空，作者后补 —— 想写什么写什么，下面只是占位提示）**
 
-很难想象一年前的五月，我连 Ubuntu 和 ROS 是都不知道。笔者大一时只是个混子，北极熊第一届视觉组成员（其实啥也没干），但误打误撞去了 2023 联盟赛广东站赛场。当时只是作为一个观众+摄影师，但赛场的氛围是无以言表的，回来后 RM 浓度就开始逐渐增高，尝试部署华师2023的视觉开源，也在这段时间逐渐学会了自学的方式，写下了第一篇 [算法组文档](https://flowus.cn/lihanchen/facb28a9-5d34-42a7-9bc8-630a182c3571) 。
-
-暑假时参加了“快递速达”的支线任务（比赛），那是第一次初识导航，还记得举着电脑拿着2D雷达在实验楼建图的喜悦。后来被春茧里华农的“自动驾驶”哨兵震撼到了，于是乎大二上和“实验楼安家组”出去喝粥路上，队长问我 24 赛季你想做啥，我毫不犹豫的答出了“导航”。
-
-抱着玩一玩练练手的心态创建了本仓库，第一个 [commit](https://gitee.com/SMBU-POLARBEAR/HzMi_rmsimulation/commit/a3e475ce59c60d68462e4555a76113e4ba1295f1) 在 2023-09-27，当时借鉴的还是 [华农 2023 RMUL 哨兵导航开源包](https://github.com/SCAU-RM-NAV/rm2023_auto_sentry_ws) 和 [湖工大RMUC地图](https://github.com/HBUTHUANGPX/Hbut_LC_sentry)，在此基础上只是加了 mid360 的仿真。后来 2023.10 月 中南大学 FYT 战队开源了[RM 哨兵上位机算法](https://github.com/baiyeweiguang/CSU-RM-Sentry)，是当时少见的 ROS2 nav2 导航框架，于是乎当时就想着缝进初代导航包（直到现在也是中南 FYT 的模样）。在不断尝试新算法的过程中，对 Gazebo 和 ros2_launch 也有了更深入的了解。
-
-如果没有开发这个仿真包，我可能也不会有机会接触到导航算法，也不会有机会接触到这么多优秀的开源项目。我还记得那是 2023.1.26，在港中深的哨兵上部署了我的仿真包（ RMUC 联队），改改 launch 文件居然就能让实车动起来了，意料之外地实现了 Sim2Real。由于学校没有机械专业，哨兵在联盟赛前不到两周才完全出生，于是乎备赛期间一直都是在赛博调车优化。
-
-上赛场了，从观众席到检录区。但当时由于在仿真中忽略了雷达偏心放置时的 tf 问题，导致实车云台旋转时定位不准，最终也没能在 RMUL 中发挥丝滑的导航走位...挺遗憾的。
-
-鄙人非大佬，只是个缝合怪菜鸡。我的学习路径个人觉得是有点畸形的，并不是自下而上地先学理论再实践，而是自上而下地先实践再不断补理论的坑。但这种学习方式也不断地给我正反馈，梦里都在改代码，每天醒来都有盼头。
+<!--
+  写作提示（可删）：
+  · 这一份栈和上游 [SMBU-POLARBEAR/HzMi_rmsimulation](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation) 的关系
+  · 2026-11 这轮做了什么：T-DT 规划/控制接入、三套模式（tdt/bit/std）、9 份文档合并、src 七组重排
+  · 踩过的坑（可引用 docs/04-issues.md）：mask 阈值 / 自车格 / 原点对齐 / 参考点取末端
+  · 想写的心路、给后来人的话
+-->
 
 ## 致谢（不分先后）
 
@@ -404,3 +400,38 @@ Mid360 点云仿真：参考了 [livox_laser_simulation](https://github.com/Livo
 感谢上海工程技术大学、辽宁科技大学、上海电力大学对本开源包的深度使用与交流，给了我很多优化方向。
 
 还有很多很多很多 RM 网友给了我很多鼓励和帮助，这里就不一一列举了（已达成龙王结局，QQ 里 RM 分组九十多人）。
+
+---
+
+## 本仓与上游的关系
+
+本仓是 [SMBU-POLARBEAR / HzMi_rmsimulation](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation)（下文"上游"）的**二次开发分支**：
+
+| 层 | 上游 | 本仓（2026-11） |
+|---|---|---|
+| 定位 | FAST-LIO / Point-LIO + AMCL / slam_toolbox / ICP | **zlio**（`rm_zlio_bridge`）+ 可选 UWB |
+| 规划 | nav2 自带（NavFn / Smac / DWB / RPP / TEB / MPPI） | **T-DT planner**（`rm_tdt_planner`）· 可选 BIT MINCO |
+| 控制 | 同上 | **T-DT local controller**（`rm_tdt_local_controller`） |
+| 障碍 | 2D 雷达 / STVL | patchwork → STVL → costmap → `/plan_mask` 桥 |
+| 启动 | `start_sentinel.sh` + `mode:=mapping/slam_nav/nav` | **`run_sim.sh` + `MODE=tdt|bit|std`** |
+| 文档 | 100+ 份散落 | **9 份合并**（见上表）|
+
+上游的**仿真资产（世界/机器人/雷达插件）、nav2 参数骨架、Docker 环境**仍直接沿用；
+上表的"本仓"列是这次改造的部分。**上游的历史与致谢保留在本文件下半部分**。
+
+## 推送说明（重要）
+
+本仓远端：`git@github.com:William-kkRMer/HzMi_rmsimulation.git`
+
+> ⚠️ **不要直接 `git push` 本地 `master`**：本地历史里有一条 1.1 GB 的 rosbag 记录
+> （`bag/raw/*.db3`），超过 GitHub 单文件 100 MB 上限 ⇒ 推送必然失败。
+>
+> 远端 master 是**单提交快照**（分支 `gh`），日常开发请在这条分支上继续：
+
+```bash
+git checkout gh          # 干净历史（无大文件）
+git add -A && git commit -m "..."
+git push rmer gh:master  # 远端叫 master
+```
+
+本地 `master` 保留完整 585 个提交历史，只作查阅/回滚用。

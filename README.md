@@ -411,6 +411,21 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 > 这里说的 `odom` **不一定垂直地面**——可以按"雷达/IMU 的朝向"来理解它。
 
+### 5. 关于 T-DT 的规划器
+
+笔者理解 T-DT 开源的（`tdt-nav-kit`）**只有核心算法**——`YAstar`（A*）、`kinodynamicAstar`（动力学搜索）、
+`MinimumSnapOsqp`（MINCO 后端）；**上下游适配与控制适配，都是笔者模仿其开源自己研制的**：
+
+- **上游适配**：nav2 planner 插件封装、`plan_mask`（障碍掩膜）与 costmap 的对接、逃逸采样、失败快照、分层状态上报；
+- **下游适配**：局部控制器（Kinodynamic 局部轨迹 → `cmd_vel`）、前视与速度参考、麦轮映射与指令延迟处理。
+
+这些**未来还会继续优化**。也正因为这层封装是自己写的，**未来我们的导航有希望脱离 nav2**——
+不再依赖 nav2 的 planner / controller 插件与行为树，而是走自己的调度。
+
+> 上游原件保留在 `third_party/tdt-nav-kit/`（含 LICENSE）；本仓用的是
+> `src/nav/rm_tdt_planner/src/tdt/` 下的副本 + `planner.cpp` / `nav_l0_perception.cpp`（适配层）、
+> `src/nav/rm_tdt_local_controller/src/controller.cpp`（控制适配）。
+
 ## 致谢（不分先后）
 
 本仓的导航算法框架**基于 [SMBU 北极熊（PolarBear）2024 赛季开源](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation) 修改**而来。

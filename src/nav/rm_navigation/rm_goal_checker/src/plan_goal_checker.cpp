@@ -29,6 +29,14 @@ void PlanGoalChecker::initialize(
   lc_node_->declare_parameter(plugin_name_ + ".yaw_goal_tolerance", 0.25);
   lc_node_->get_parameter(plugin_name_ + ".xy_goal_tolerance", xy_tolerance_);
   lc_node_->get_parameter(plugin_name_ + ".yaw_goal_tolerance", yaw_tolerance_);
+  // ★★★ 2026-11-14：**同时要求"离真正的目标"足够近**。
+  //   背景：规划器 A* 找不到路径时会返回一条**到逃逸点的两点直线**（避免 nav2 放弃目标）；
+  //   如果只看 `/plan` 末点，车走到逃逸点就被判 REACHED ⇒ 任务"成功"结束 ⇒ 车停。
+  //   加上这一条：逃逸路径永远不算到达 ⇒ BT 继续重规划 ⇒ 车保持运动。
+  lc_node_->declare_parameter(plugin_name_ + ".require_action_goal", true);
+  lc_node_->get_parameter(plugin_name_ + ".require_action_goal", require_action_goal_);
+  lc_node_->declare_parameter(plugin_name_ + ".action_goal_tolerance", 0.30);
+  lc_node_->get_parameter(plugin_name_ + ".action_goal_tolerance", action_goal_tolerance_);
 
   plan_sub_ = lc_node_->create_subscription<nav_msgs::msg::Path>(
     "/plan", rclcpp::QoS(1),
@@ -50,7 +58,7 @@ void PlanGoalChecker::reset()
 
 bool PlanGoalChecker::isGoalReached(
   const geometry_msgs::msg::Pose & /*query_pose*/,
-  const geometry_msgs::msg::Pose & /*goal_pose*/,
+  const geometry_msgs::msg::Pose & goal_pose,
   const geometry_msgs::msg::Twist & /*velocity*/)
 {
   nav_msgs::msg::Path::SharedPtr plan;
@@ -108,6 +116,19 @@ bool PlanGoalChecker::isGoalReached(
 
   if (dist > xy_tolerance_) {
     return false;
+  }
+  // ★ 逃逸/部分路径不应算到达：再用 nav2 传进来的**真实目标**卡一道
+  if (require_action_goal_) {
+    const double dg = std::hypot(
+      robot_in_goal.pose.position.x - goal_pose.position.x,
+      robot_in_goal.pose.position.y - goal_pose.position.y);
+    RCLCPP_INFO_THROTTLE(
+      lc_node_->get_logger(), *lc_node_->get_clock(), 1000,
+      "[plan_goal_checker] 距真实目标 %.2f m（tol %.2f）⇒ %s",
+      dg, action_goal_tolerance_, (dg <= action_goal_tolerance_) ? "到点" : "未到（逃逸/部分路径）");
+    if (dg > action_goal_tolerance_) {
+      return false;
+    }
   }
   return dyaw <= yaw_tolerance_;
 }

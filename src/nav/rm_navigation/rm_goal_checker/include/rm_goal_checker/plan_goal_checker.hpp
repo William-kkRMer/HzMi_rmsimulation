@@ -56,6 +56,8 @@ private:
   std::string robot_frame_;
   double xy_tolerance_{0.25};
   double yaw_tolerance_{0.25};
+  bool require_action_goal_{true};
+  double action_goal_tolerance_{0.30};
 };
 
 }  // namespace rm_goal_checker

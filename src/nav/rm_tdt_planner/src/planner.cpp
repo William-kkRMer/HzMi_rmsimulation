@@ -515,45 +515,9 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     }
 
     // ★★ 2026-11-09（步骤 0）：**当前 mask 一次性并入 a_occ 与 sfc_map**。
-    //   上游实测（读源码）：`YAstar` 内部 `isInObstacle/map` **包含 mask**（所以 A*、SDF 代价场、
-    //   简化/碰撞判定都看得到动态障碍）；**只有 SfcSquare / MinimumSnap 吃的是另外传入的一张图**
-    //   （demo 传的就是那张 PNG）⇒ 它们看不见 mask ⇒ 表现为"A* 绕开了、平滑又拐回去"。
-    //   这里在"图定型之前"把 mask 并入两张图（a_occ 给 A* + 我们的严格校验，sfc_map 给 SFC/MinSnap），
-    //   六个消费者拿到同一份障碍。`setMaskMapTimed` 仍保留（T-DT 自带时间平滑，只作用于 A*）。
-    //   ★★ 2026-11-14：**元数据不匹配必须报出来**——原来条件不满足就静默跳过，
-    //   症状是"动态障碍完全不生效"而日志里什么都看不到。
-    int n_mask_added = 0;
-    bool mask_meta_ok = false;
-    if (p_mask_enable_ && mask_) {
-      const bool ok_res = (std::abs(mask_->info.resolution - res) < 1e-9);
-      const bool ok_ox  = (std::abs(mask_->info.origin.position.x - ox) < 1e-6);
-      const bool ok_oy  = (std::abs(mask_->info.origin.position.y - oy) < 1e-6);
-      const bool ok_wh  = (mask_->info.width == W && mask_->info.height == H);
-      mask_meta_ok = ok_res && ok_ox && ok_oy && ok_wh;
-      if (!mask_meta_ok) {
-        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 5000,
-            "[tdt] /plan_mask 元数据与规划图不匹配 ⇒ 动态障碍不并入: "
-            "res[%s %.4f/%.4f] ox[%s %.3f/%.3f] oy[%s %.3f/%.3f] size[%s %ux%u/ %ux%u]",
-            ok_res ? "ok" : "diff", mask_->info.resolution, res,
-            ok_ox ? "ok" : "diff", mask_->info.origin.position.x, ox,
-            ok_oy ? "ok" : "diff", mask_->info.origin.position.y, oy,
-            ok_wh ? "ok" : "diff", mask_->info.width, mask_->info.height, W, H);
-      }
-    }
-    if (mask_meta_ok) {
-      for (unsigned int y = 0; y < H; ++y)
-        for (unsigned int x = 0; x < W; ++x) {
-          const size_t i = static_cast<size_t>(y) * W + x;
-          if (mask_->data[i] > 50 && !a_occ[i]) {   // OccupancyGrid: >50 = occupied
-            a_occ[i] = 1;
-            sfc_map(static_cast<int>(y), static_cast<int>(x)) = 0;
-            ++n_mask_added;
-          }
-        }
-      if (n_mask_added > 0)
-        RCLCPP_INFO(logger_, "[tdt] 动态障碍并入 %d 格（静态 %d + 动态 ⇒ 共 %d 格）",
-                    n_mask_added, n_occ, n_occ + n_mask_added);
-    }
+    //   说明：**真正的 mask 合并在下面"按世界坐标重采样"那段**（支持几何不同：pad2 后的规划图
+    //   584x345 vs /map 580x341），这里不再做"元数据必须完全相等"的二次合并
+    //   （2026-11-14 移除：它永远不成立，只会每 5 s 打一条假警告"动态障碍不并入"）。
 
     // ★ 发布规划栅格（限流 ~5 Hz，仅在有订阅者时构造）
     if (grid_pub_ && grid_pub_->get_subscription_count() > 0) {
@@ -848,7 +812,52 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
       path = astar.search(Eigen::Vector2f(static_cast<float>(sx) - lox, static_cast<float>(sy) - loy),
                           Eigen::Vector2f(static_cast<float>(gx) - lox, static_cast<float>(gy) - loy));
     }
-    if (path.size() < 2) { RCLCPP_WARN(logger_, "[tdt] A* 没找到路径"); return out; }
+    if (path.size() < 2) {
+      // ★★★ 2026-11-14（B+C，实测依据）：**A* 失败不再返回空路径**。
+      //   原后果（446 s 那次）：返回空 ⇒ nav2 `ActionServer Aborting handle` ⇒ BT 放弃整个目标、
+      //   再也不调 planner ⇒ 控制器 2 s 后 plan 过期 ⇒ 发 0 ⇒ 车停 67 s。
+      //   现在：记一次失败（C：A* 失败也计入 fail_streak，并**立刻**转 ESCAPE，不等 3 次），
+      //   采样 16 个方向可用长度（自车 0.25 m 内豁免，与逃逸触发同一套规则），
+      //   直接返回一条**到逃逸点的两点直线**（不依赖 A* 也能出路径）⇒ BT 认为规划成功、继续跑。
+      ++fail_streak_;
+      const double px0 = static_cast<double>(sx), py0 = static_cast<double>(sy);
+      const double k_self_clear = 0.25;
+      double best_d = 0.0, best_h = escape_heading_;
+      for (int k = 0; k < 16; ++k) {
+        const double h = k * M_PI / 8.0;
+        double d = 0.0;
+        for (; d < p_escape_dist_; d += 0.05) {
+          const double wx = px0 + std::cos(h) * d, wy = py0 + std::sin(h) * d;
+          const int cx = static_cast<int>((wx - ox) / res);
+          const int cy = static_cast<int>((wy - oy) / res);
+          if (cx < 0 || cy < 0 || cx >= static_cast<int>(W) || cy >= static_cast<int>(H)) break;
+          if (d >= k_self_clear && a_occ[static_cast<size_t>(cy) * W + cx]) break;
+        }
+        if (d > best_d) { best_d = d; best_h = h; }
+      }
+      escape_heading_ = best_h;
+      escape_target_dist_ = (best_d >= p_escape_min_clear_)
+          ? p_escape_dist_ : std::max(0.15, std::min(p_escape_dist_, best_d * 0.5));
+      escape_start_ = node_->now();
+      ++escape_attempts_;
+      rec_state_ = REC_ESCAPE;
+      const std::string cap2 = (p_max_escape_ > 0) ? std::to_string(p_max_escape_) : std::string("inf");
+      RCLCPP_WARN(logger_,
+          "[tdt] A* 没找到路径 ⇒ 逃逸（不返回空路径）：方向 %.0f°, 可用 %.2f m, 目标 %.2f m, 失败 %d 次, 尝试 %d/%s",
+          best_h * 180.0 / M_PI, best_d, escape_target_dist_, fail_streak_, escape_attempts_, cap2.c_str());
+      nav_msgs::msg::Path esc;
+      esc.header = start.header;
+      const double travel = std::min(escape_target_dist_, std::max(0.30, best_d * 0.5));
+      for (int i = 0; i <= 1; ++i) {
+        geometry_msgs::msg::PoseStamped ps;
+        ps.header = esc.header;
+        ps.pose.position.x = px0 + (i == 0 ? 0.0 : std::cos(best_h) * travel);
+        ps.pose.position.y = py0 + (i == 0 ? 0.0 : std::sin(best_h) * travel);
+        ps.pose.orientation.w = 1.0;
+        esc.poses.push_back(ps);
+      }
+      return esc;
+    }
     pub_astar_->publish(make_path(path, ox, oy));
 
     // ④ 简化

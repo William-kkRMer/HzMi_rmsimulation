@@ -36,6 +36,12 @@ controller_server:
     #   并用 tf2::TimePointZero（最新变换）比较 ⇒ 不受时间戳问题影响。
     general_goal_checker:
       stateful: False
+      # ★★★ 2026-11-14：**除了 /plan 末点，还要求离真目标足够近**。
+      #   为什么：A* 无解时规划器返回"到逃逸点的两点直线"（避免 nav2 放弃目标），
+      #   只看 /plan 末点的话，车走到逃逸点就被判 REACHED ⇒ 任务结束 ⇒ 停车。
+      #   require_action_goal=false 可回退到旧行为（只看 /plan 末点）。
+      require_action_goal: True
+      action_goal_tolerance: 0.30
       plugin: "rm_goal_checker::PlanGoalChecker"
       xy_goal_tolerance: 0.25
       yaw_goal_tolerance: 3.15      # 哨兵允许倒着到点：朝向不作为硬条件（3.15 rad ≈ 180°）

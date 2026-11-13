@@ -90,6 +90,12 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     p_stuck_time_ = d("stuck_time", 2.0);
     p_stuck_eps_ = d("stuck_eps", 0.05);
     p_escape_dist_ = d("escape_dist", 1.5);
+    // ★★ 2026-11-14：**逃逸行为可配**（"宁动不停"）
+    //   max_escape <= 0             ⇒ 无限逃逸（不因尝试次数进 FAILED）
+    //   escape_allow_enclosed=true  ⇒ 16 方向全 <escape_min_clear 时**不判 FAILED**，
+    //                                 选最宽方向、距离缩到 best_d*0.5（小范围来回动）
+    p_escape_allow_enclosed_ = d("escape_allow_enclosed", true);
+    p_escape_min_clear_ = d("escape_min_clear", 0.35);
     p_escape_speed_ = d("escape_speed", 0.3);
     p_escape_clear_ = d("escape_clear", 0.5);
     p_max_escape_ = static_cast<int>(d("max_escape", 3.0));
@@ -200,7 +206,7 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     if (p_recovery_enable_ && rec_state_ == REC_ESCAPE) {
       const double px = start.pose.position.x, py = start.pose.position.y;
       const double elapsed = (node_->now() - escape_start_).seconds();
-      const double need = p_escape_dist_ / std::max(0.05, p_escape_speed_);
+      const double need = escape_target_dist_ / std::max(0.05, p_escape_speed_);
       double clr = 0.0; bool have_clr = false;
       if (auto q = rog_map::MapRegistry::get()) {
         double dist = 0.0; Eigen::Vector3d grad;
@@ -429,8 +435,8 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     bool use_two_level = false;
     // ★ ESCAPE：把目标换成逃逸点（离机器人 escape_dist），交给 A*+SFC+MinSnap 求解
     if (p_recovery_enable_ && rec_state_ == REC_ESCAPE) {
-      gx_solve = static_cast<double>(sx) + std::cos(escape_heading_) * p_escape_dist_;
-      gy_solve = static_cast<double>(sy) + std::sin(escape_heading_) * p_escape_dist_;
+      gx_solve = static_cast<double>(sx) + std::cos(escape_heading_) * escape_target_dist_;
+      gy_solve = static_cast<double>(sy) + std::sin(escape_heading_) * escape_target_dist_;
       use_two_level = false;
     }
     double s_head = 0.0;
@@ -498,16 +504,32 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     }
 
     // ★★ 2026-11-09（步骤 0）：**当前 mask 一次性并入 a_occ 与 sfc_map**。
-    //   之前 mask 只喂给 astar（setMaskMapTimed），走廊 SFC / MinSnap / 零容差门控 /
-    //   SDF 代价场**全都看不见动态障碍** ⇒ A* 绕开了，平滑又把轨迹拐回去。
-    //   这里在"图定型之前"并入一次，六个消费者拿到同一份障碍。
-    //   注意：`setMaskMapTimed` 仍保留（T-DT 自带的时间平滑，只作用于 A*），
-    //   且 A* 看到的集合 ⊇ 其余消费者看到的集合，因此不会出现"A* 看见、走廊看不见"。
+    //   上游实测（读源码）：`YAstar` 内部 `isInObstacle/map` **包含 mask**（所以 A*、SDF 代价场、
+    //   简化/碰撞判定都看得到动态障碍）；**只有 SfcSquare / MinimumSnap 吃的是另外传入的一张图**
+    //   （demo 传的就是那张 PNG）⇒ 它们看不见 mask ⇒ 表现为"A* 绕开了、平滑又拐回去"。
+    //   这里在"图定型之前"把 mask 并入两张图（a_occ 给 A* + 我们的严格校验，sfc_map 给 SFC/MinSnap），
+    //   六个消费者拿到同一份障碍。`setMaskMapTimed` 仍保留（T-DT 自带时间平滑，只作用于 A*）。
+    //   ★★ 2026-11-14：**元数据不匹配必须报出来**——原来条件不满足就静默跳过，
+    //   症状是"动态障碍完全不生效"而日志里什么都看不到。
     int n_mask_added = 0;
-    if (p_mask_enable_ && mask_ && mask_->info.resolution == res &&
-        std::abs(mask_->info.origin.position.x - ox) < 1e-6 &&
-        std::abs(mask_->info.origin.position.y - oy) < 1e-6 &&
-        mask_->info.width == W && mask_->info.height == H) {
+    bool mask_meta_ok = false;
+    if (p_mask_enable_ && mask_) {
+      const bool ok_res = (std::abs(mask_->info.resolution - res) < 1e-9);
+      const bool ok_ox  = (std::abs(mask_->info.origin.position.x - ox) < 1e-6);
+      const bool ok_oy  = (std::abs(mask_->info.origin.position.y - oy) < 1e-6);
+      const bool ok_wh  = (mask_->info.width == W && mask_->info.height == H);
+      mask_meta_ok = ok_res && ok_ox && ok_oy && ok_wh;
+      if (!mask_meta_ok) {
+        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 5000,
+            "[tdt] /plan_mask 元数据与规划图不匹配 ⇒ 动态障碍不并入: "
+            "res[%s %.4f/%.4f] ox[%s %.3f/%.3f] oy[%s %.3f/%.3f] size[%s %ux%u/ %ux%u]",
+            ok_res ? "ok" : "diff", mask_->info.resolution, res,
+            ok_ox ? "ok" : "diff", mask_->info.origin.position.x, ox,
+            ok_oy ? "ok" : "diff", mask_->info.origin.position.y, oy,
+            ok_wh ? "ok" : "diff", mask_->info.width, mask_->info.height, W, H);
+      }
+    }
+    if (mask_meta_ok) {
       for (unsigned int y = 0; y < H; ++y)
         for (unsigned int x = 0; x < W; ++x) {
           const size_t i = static_cast<size_t>(y) * W + x;
@@ -1341,24 +1363,29 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
         // 失败过一次就转到垂直方向尝试（左右交替）
         if (escape_attempts_ % 2 == 1) best_h += M_PI / 2.0;
         else if (escape_attempts_ >= 2) best_h -= M_PI / 2.0;
-        if (best_d < 0.35) {
-          // 四面都堵 ⇒ 直接判失败
-          rec_state_ = REC_FAILED;
-          RCLCPP_ERROR(logger_, "[tdt][恢复] 16 个方向都 <0.35 m ⇒ FAILED");
-        } else {
-          escape_heading_ = best_h;
-          escape_start_ = now_t;
-          ++escape_attempts_;
-          rec_state_ = REC_ESCAPE;
-          fail_streak_ = 0;
-          RCLCPP_WARN(logger_, "[tdt][恢复] 触发(%s%s) ⇒ 逃逸方向 %.0f°, 可用长度 %.2f m (尝试 %d/%d)",
-                      t1 ? "T1无进度" : "", t2 ? "T2连续失败" : (t3 ? "T3跟踪误差" : ""),
-                      best_h * 180.0 / M_PI, best_d, escape_attempts_, p_max_escape_);
-        }
-        if (escape_attempts_ > p_max_escape_) {
-          rec_state_ = REC_FAILED;
-          RCLCPP_ERROR(logger_, "[tdt][恢复] 超过 %d 次尝试 ⇒ FAILED（停车）", p_max_escape_);
-        }
+          if (best_d < p_escape_min_clear_ && !p_escape_allow_enclosed_) {
+            // 旧行为（需 escape_allow_enclosed:=false）：四面都堵 ⇒ 判失败
+            rec_state_ = REC_FAILED;
+            RCLCPP_ERROR(logger_, "[tdt][恢复] 16 个方向都 <%.2f m ⇒ FAILED（停车）", p_escape_min_clear_);
+          } else {
+            escape_heading_ = best_h;
+            escape_start_ = now_t;
+            // ★ 被围住 ⇒ 缩短逃逸距离（best_d/2，最小 0.15 m）⇒ 原地小范围来回动
+            escape_target_dist_ = (best_d >= p_escape_min_clear_)
+                ? p_escape_dist_
+                : std::max(0.15, std::min(p_escape_dist_, best_d * 0.5));
+            ++escape_attempts_;
+            rec_state_ = REC_ESCAPE;
+            fail_streak_ = 0;
+            const std::string cap = (p_max_escape_ > 0) ? std::to_string(p_max_escape_) : std::string("inf");
+            RCLCPP_WARN(logger_, "[tdt][恢复] 触发(%s%s%s) ⇒ 方向 %.0f°, 可用 %.2f m, 目标 %.2f m (尝试 %d/%s)",
+                        t1 ? "T1无进度" : "", t2 ? "T2连续失败" : "", t3 ? "T3跟踪误差" : "",
+                        best_h * 180.0 / M_PI, best_d, escape_target_dist_, escape_attempts_, cap.c_str());
+          }
+          if (p_max_escape_ > 0 && escape_attempts_ > p_max_escape_) {
+            rec_state_ = REC_FAILED;
+            RCLCPP_ERROR(logger_, "[tdt][恢复] 超过 %d 次尝试 ⇒ FAILED（停车）", p_max_escape_);
+          }
       }
     }
 
@@ -1497,7 +1524,10 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
   bool p_recovery_enable_ = true;
   double p_stuck_time_ = 2.0, p_stuck_eps_ = 0.05;
   double p_escape_dist_ = 1.5, p_escape_speed_ = 0.3, p_escape_clear_ = 0.5;
+  bool   p_escape_allow_enclosed_ = true;
+  double p_escape_min_clear_ = 0.35;
   int p_max_escape_ = 3;
+  double escape_target_dist_ = 1.5;   // 本次逃逸目标距离（被围住时缩短）
   enum RecState { REC_NORMAL, REC_ESCAPE, REC_FAILED } rec_state_ = REC_NORMAL;
   Eigen::Vector2f last_pos_{-1e9f, -1e9f};
   rclcpp::Time last_move_time_;

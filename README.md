@@ -391,34 +391,19 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 ## 致谢（不分先后）
 
-### 项目谱系
-
 本仓的导航算法框架**基于 [SMBU 北极熊（PolarBear）2024 赛季开源](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation) 修改**而来。
 
 - **项目早期**参考了 **中南大学、南京航空航天大学、哈尔滨工业大学** 的 2024 赛季开源与车体模型；
 - **今年的工作**参考、研究并学习了 **辽宁科技大学、浙江大学、武汉科技大学、RPS** 的开源；
-- 并**接入了东北大学（T-DT）的 **Z-Localization（zlio）**与 tdt-nav-kit 两个模块**，本仓的规划器/控制器即基于后者改造。
+- 并**接入了东北大学（T-DT）的 Z-Localization（zlio）与 tdt-nav-kit 两个模块**，本仓的规划器/控制器即基于后者改造。
 
 一路走来得到了很多**学长学姐**的教导和帮助，在此感谢各位学长学姐的不吝赐教，以及各位大佬的开源。
-
-### 具体组件与个人
-
-Mid360 点云仿真：参考了 [livox_laser_simulation](https://github.com/Livox-SDK/livox_laser_simulation/blob/main/src/livox_points_plugin.cpp)、 [livox_laser_simulation_RO2](https://github.com/stm32f303ret6/livox_laser_simulation_RO2/blob/main/src/livox_points_plugin.cpp)、 [Issue15: CustomMsg](https://github.com/Livox-SDK/livox_laser_simulation/issues/15)。
-
-导航算法框架（上游部分）：基于 [中南大学 FYT 战队 RM 哨兵上位机算法](https://github.com/baiyeweiguang/CSU-RM-Sentry) 修改并适配仿真，在原有基础上添加对 base_link 的建模，提供多种可选定位方式并完善 launch 文件。
-
-T-DT 规划/控制：规划器与局部控制器来自东北大学 T-DT 的 **tdt-nav-kit**（`rm_tdt_planner` / `rm_tdt_local_controller` 为适配 nav2 的封装，算法本身未改）；定位来自 **Z-Localization（zlio）**。
-
-感谢深技大 Shockley，对雷达跟随云台旋转时的速度变换问题提供了很好的解决思路，从而有了 [fake_vel_transform](./src/nav/rm_navigation/fake_vel_transform/) 功能包。**（本仓已把该包移到 `src/nav/rm_navigation/fake_vel_transform`）**
-
-感谢上海工程技术大学、辽宁科技大学、上海电力大学对上游开源包的深度使用与交流，给了很多优化方向。
-
-还有很多很多很多 RM 网友给了我很多鼓励和帮助，这里就不一一列举了（已达成龙王结局，QQ 里 RM 分组九十多人）。
 
 ---
 
 ## 本仓与上游的关系
 
+<<<<<<< HEAD
 > **（待补：上游项目地址与关系说明 —— 作者稍后补充）**
 
 <!--
@@ -429,6 +414,21 @@ T-DT 规划/控制：规划器与局部控制器来自东北大学 T-DT 的 **td
   之前那一版表格（定位/规划/控制/障碍/启动/文档逐层对照）已被作者判定"几乎都不对"，
   所以整段撤掉，等准确信息再写。
 -->
+=======
+本仓是 [SMBU-POLARBEAR / HzMi_rmsimulation](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation)（下文"上游"）的**二次开发分支**：
+
+| 层 | 上游 | 本仓（2026-11） |
+|---|---|---|
+| 定位 | FAST-LIO / Point-LIO + AMCL / slam_toolbox / ICP | **zlio**（`rm_zlio_bridge`）+ 可选 UWB |
+| 规划 | nav2 自带（NavFn / Smac / DWB / RPP / TEB / MPPI） | **T-DT planner**（`rm_tdt_planner`）· 可选 BIT MINCO |
+| 控制 | 同上 | **T-DT local controller**（`rm_tdt_local_controller`） |
+| 障碍 | 2D 雷达 / STVL | patchwork → STVL → costmap → `/plan_mask` 桥 |
+| 启动 | `start_sentinel.sh` + `mode:=mapping/slam_nav/nav` | **`run_sim.sh` + `MODE=tdt|bit|std`** |
+| 文档 | 100+ 份散落 | **9 份合并**（见上表）|
+
+上游的**仿真资产（世界/机器人/雷达插件）、nav2 参数骨架、Docker 环境**仍直接沿用；
+上表的"本仓"列是这次改造的部分。**上游的历史与致谢保留在本文件下半部分**。
+>>>>>>> 26b3efa7 (leave the closing words blank for the author and explain where this repo came from)
 
 ## 推送说明（重要）
 

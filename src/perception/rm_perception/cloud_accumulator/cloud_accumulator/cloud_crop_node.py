@@ -50,7 +50,16 @@ class CloudCropNode(Node):
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.pub = self.create_publisher(PointCloud2, out, qos_profile_sensor_data)
+        # ★★★ 2026-11-14（**实测根因**）：发布端必须是 **RELIABLE**。
+        #   原来用 `qos_profile_sensor_data`（BEST_EFFORT），而 STVL（nav2 的 observation source）
+        #   用默认 RELIABLE 订阅 ⇒ DDS **QoS 不兼容 ⇒ STVL 一条点云都收不到**：
+        #     [cloud_crop] New subscription discovered on topic '/segmentation/obstacle_cropped',
+        #                  requesting incompatible QoS... Last incompatible policy: RELIABILITY
+        #   实测后果：`/plan_mask` 与静态图几乎完全相同（36,705 vs 36,720，非静态仅 14~17 格）
+        #   ⇒ **整条动态障碍链（patchwork → STVL → costmap → plan_mask → T-DT）是死的**，
+        #      坡/台阶/动态障碍在规划器眼里全都不存在。
+        #   订阅端保持 sensor_data（与 patchwork 的 BEST_EFFORT 匹配），只把发布端改成 RELIABLE。
+        self.pub = self.create_publisher(PointCloud2, out, 10)
         self.sub = self.create_subscription(PointCloud2, inp, self._cb, qos_profile_sensor_data)
         self.get_logger().info('cloud_crop: %s -> %s, target=%s, %d boxes, invert=%s'
                                % (inp, out, self.target_frame, len(self.boxes), self.invert))

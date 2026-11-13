@@ -694,8 +694,13 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
           mm(y, x) = occ ? 0 : 255;
           if (occ) {
             const size_t i = static_cast<size_t>(y) * W + x;
-            if (!a_occ[i]) { a_occ[i] = 1; ++n_dyn; }
-            a_occ_dyn_[i] = 1;   // 供下面"mask 膨胀"使用（只膨胀 mask 格，不膨胀静态墙）
+              // ★★★ 2026-11-14（实测根因）：**只有"非静态"的 mask 格才进膨胀集合**。
+              //   /plan_mask 与静态图几乎相同（36,705 vs 36,720，非静态 14~17 格）——STVL 把静态墙也标 lethal。
+              //   原来对每个 mask 格都置 a_occ_dyn_ ⇒ 下面 1 格膨胀把墙又膨胀一遍 ⇒ 墙净空
+              //   = dilate_cells(0.10) + mask 膨胀(0.05) + corridor_shrink(0.15) = 0.30 m；
+              //   0.7 m 门只剩 0.10 m ⇒ 角落/门口 A* 无解（实测 aocc 多出的 19,484 格里 81% 离墙 ≤0.10 m）。
+              const bool is_static = (a_occ[i] != 0);
+              if (!is_static) { a_occ[i] = 1; a_occ_dyn_[i] = 1; ++n_dyn; }
             sfc_map(static_cast<int>(y), static_cast<int>(x)) = 0;
             ++n_hit;
           }

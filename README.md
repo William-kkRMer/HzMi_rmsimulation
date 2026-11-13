@@ -427,19 +427,3 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 > **（待补：上游项目地址与关系说明 —— 作者稍后补充）**
 
-## 推送说明（重要）
-
-本仓远端：`git@github.com:William-kkRMer/HzMi_rmsimulation.git`
-
-> ⚠️ **不要直接 `git push` 本地 `master`**：本地历史里有一条 1.1 GB 的 rosbag 记录
-> （`bag/raw/*.db3`），超过 GitHub 单文件 100 MB 上限 ⇒ 推送必然失败。
->
-> 远端 master 是**单提交快照**（分支 `gh`），日常开发请在这条分支上继续：
-
-```bash
-git checkout gh          # 干净历史（无大文件）
-git add -A && git commit -m "..."
-git push rmer gh:master  # 远端叫 master
-```
-
-本地 `master` 保留完整 585 个提交历史，只作查阅/回滚用。

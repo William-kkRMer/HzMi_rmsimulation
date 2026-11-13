@@ -451,5 +451,30 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 ## 本仓与上游的关系
 
-> **（待补：上游项目地址与关系说明 —— 作者稍后补充）**
+本仓是在下面这些开源项目的基础上整理、改造而来（统称"上游"）。**哪些代码真的进了本仓**在最后一列说明。
+
+| 上游项目 | 链接 | 与本仓的关系 |
+|---|---|---|
+| **SMBU 北极熊 24 赛季**（HzMi_rmsimulation / pb_rmsimulation） | <https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation> | **主干来源**：仿真资产、world/机器人模型、nav2 参数骨架、launch 结构 |
+| **SMBU 北极熊 25 赛季**（pb2025_sentry_nav） | <https://github.com/SMBU-PolarBear-Robotics-Team/pb2025_sentry_nav> | 同队后续版本，**参考**（未直接合并） |
+| **z-localization** | <https://github.com/mozihe/z-localization> | **定位后端**（zlio）；本仓 `rm_zlio_bridge` 把它接进 nav2 |
+| **T-DT nav kit**（东北大学 T-DT 2026） | <https://github.com/T-DT-Algorithm-2026/tdt-nav-kit> | **规划器核心算法**；本仓 `src/nav/rm_tdt_planner/src/tdt/` 为副本，插件/掩膜/逃逸/控制器为自研 |
+| **navi_minco_bit** | <https://github.com/Walker152/navi_minco_bit> | **BIT 的 MINCO 规划+控制**（`MODE=bit`）；ROGMap 也经它引入 |
+| **small_point_lio** | <https://github.com/yancey2023/small_point_lio> | **LIO 备选**（`lio:=small_point_lio`） |
+| **COD 2026 导航** | <https://gitee.com/codnavgation/cod_-rm2026_-navigation> | **只读参考**（`third_party/cod_nav_2026`，不参与构建） |
+| **中南 FYT**（CSU-RM-Sentry） | <https://github.com/baiyeweiguang/CSU-RM-Sentry> | nav2 框架沿革来源（上游作者在其基础上适配仿真） |
+| **哈工大 2024 哨兵规划** | <https://github.com/zzt-180/sentry_planning> | 早期参考 |
+| **rose_navigation** | <https://github.com/hyheiyue/rose_navigation> | 今年参考/学习 |
+| **sentry26** | <https://github.com/xiix666/sentry26> | 今年参考/学习 |
+| **HWSentryNav26** | <https://github.com/Polyacetone/HWSentryNav26> | 今年参考/学习（⚠️ 链接待确认，见下） |
+| **autosentry** | <https://github.com/AbabalaT/autosentry> | 今年参考/学习（⚠️ 链接待确认，见下） |
+
+> ⚠️ **待确认**（当前从本机访问不到，可能是改名/删除/私有）：
+> `Polyacetone/HWSentryNav26`、`AbabalaT/autosentry`、以及 `yancey2023/small_point_lio`（这几个我访问时报错，
+> 作者确认后我会修正链接）。
+>
+> **FYT 里 TUP 那份**：尚未加入，作者补充后再补一行。
+
+**约定**：本表只说明"来源与用途"，不声称衍生关系；具体到包级/函数级的对照见
+`docs/06-tdt.md`（T-DT 全链对照）与后记第 5 点（规划器哪些是上游、哪些是自研）。
 

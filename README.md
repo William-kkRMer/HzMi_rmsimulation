@@ -441,7 +441,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 
 本仓的导航算法框架**基于 [SMBU 北极熊（PolarBear）2024 赛季开源](https://gitee.com/SMBU-POLARBEAR/pb_rmsimulation) 修改**而来。
 
-- **项目早期**参考了 **中南大学、南京航空航天大学、哈尔滨工业大学** 的 2024 赛季开源与车体模型；
+- **项目早期**参考了 **中南大学、南京航空航天大学、哈尔滨工业大学** 的 2023/2024 赛季开源与车体模型（南航为 2023 赛季）；
 - **今年的工作**参考、研究并学习了 **辽宁科技大学、浙江大学、武汉科技大学、RPS、北京理工大学、中国科学技术大学** 的开源；
 - 并**接入了东北大学（T-DT）的 Z-Localization（zlio）与 tdt-nav-kit 两个模块**，本仓的规划器/控制器即基于后者改造。
 
@@ -468,7 +468,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 | **rose_navigation** | <https://github.com/hyheiyue/rose_navigation> | 今年参考/学习 |
 | **sentry26** | <https://github.com/xiix666/sentry26> | 今年参考/学习 |
 | **HWSentryNav26** | <https://github.com/Polyacetone/HWSentryNav26> | 今年参考/学习 |
-| **autosentry**（南京航空航天大学） | <https://github.com/AbabalaT/autosentry> | **南航 2024 赛季开源**，早期参考 |
+| **autosentry**（南京航空航天大学） | <https://github.com/AbabalaT/autosentry> | **南航 2023 赛季开源**，早期参考 |
 
 **约定**：本表只说明"来源与用途"，不声称衍生关系；具体到包级/函数级的对照见
 `docs/06-tdt.md`（T-DT 全链对照）与后记第 5 点（规划器哪些是上游、哪些是自研）。

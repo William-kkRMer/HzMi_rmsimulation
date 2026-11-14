@@ -52,7 +52,7 @@ planner_server:
       # ★★★ 2026-11-12：**局部窗口放大到覆盖全图**（8.0 → 30.0）。
       #   本图 560x313 @ 0.05 = 28.0 x 15.65 m（对角 ≈ 32 m），30.0 已覆盖整张图。
       #   效果（planner.cpp:466 的判定）：
-      #     `s_total - s_now > local_window + 0.5` 恒不成立
+      #     `s_total - s_now > global_window + 0.5` 恒不成立
       #     ⇒ L2 **一次解到真目标**（全图覆盖、整条路径都吃动态 mask）
       #     ⇒ 同时 `two_level: true` 保留 ⇒ **全图骨架仍会计算并发布**
       #        （/nav/l1/dbg/backbone，RViz 可见）
@@ -61,7 +61,9 @@ planner_server:
       #     - 动态障碍闪烁时全局方向可能比以前更"抖"（8 m 窗口的初衷就是压制这个）
       #   回退：改回 8.0（= 前 8 m 优化 + 骨架尾段接到目标）。
       two_level: true
-      local_window: 30.0
+      # ★ 2026-11-14 改名：local_window → **global_window**（这是"全局规划器内部
+      #   用动态层优化多远"，不是局部规划器的窗口；≥场地尺寸 ⇒ 全图都吃动态层）。
+      global_window: 30.0
       backbone_age: 5.0
       # ---- 恢复闭环（现阶段先关：底层跟踪还不稳，T1 会误触发）----
       recovery_enable: true   # 与之前一致（默认值就是 true）

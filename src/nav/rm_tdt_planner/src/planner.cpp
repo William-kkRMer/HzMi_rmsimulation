@@ -94,7 +94,7 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     }
     // ★★ 2026-11-09（步骤 1）：两级规划
     //   L1 骨架 = 只用静态图的 A*（缓存，低频重算）——保证全局方向稳定不抖；
-    //   L2 局部 = 从当前位姿算到"骨架上 s + local_window 处"——实时吃掉动态障碍。
+    //   L2 动态层 = 从当前位姿算到"骨架上 s + global_window 处"——实时吃掉动态障碍。
     //   关掉（two_level:=false）即退回原来的"一步算到真目标"行为。
     // ★ 2026-11-09：恢复闭环（FSM，落点=规划器）
     p_recovery_enable_ = d("recovery_enable", true);
@@ -119,7 +119,15 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     p_use_items_ = d("use_items", true);
     p_log_sdf_ = d("log_sdf", true);
     p_two_level_ = d("two_level", true);
-    p_local_window_ = d("local_window", 8.0);
+    // ★★★ 2026-11-14：**改名 local_window → global_window**（用户指出：这是"全局规划器内部
+    //   用动态层优化多远"，不是"局部规划器的窗口"，叫 local 会误导）。
+    //   兼容旧键：YAML 里若还写着 local_window，仍能读到（打一次性 WARN）。
+    if (node_->has_parameter(name + ".local_window")) {
+      p_global_window_ = node_->get_parameter(name + ".local_window").as_double();
+      RCLCPP_WARN(logger_, "[tdt] 参数 GridBased.local_window 已改名 global_window（旧键仍生效，建议改掉）");
+    } else {
+      p_global_window_ = d("global_window", 30.0);
+    }
     p_backbone_age_ = d("backbone_age", 5.0);
     p_mask_layers_ = d("mask_num_layers", 4);
     plan_pub_ = node_->create_publisher<rm_plan_msgs::msg::TrajectoryPlan>("/trajectory_plan", 1);
@@ -162,9 +170,12 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
       escape_start_ = t0;
     }
 
-    RCLCPP_INFO(logger_, "[tdt] configured: range=%.2f shrink=%.2f order=%d maxDx=%d TL=%.1f iter=%d v=%.2f a=%.2f norm=%d",
-                p_max_range_, p_shrink_, p_order_, p_max_dx_, p_tl_, p_collision_iter_, p_max_speed_, p_max_acc_,
-                (int)p_norm_time_);
+    RCLCPP_INFO(logger_,
+        "[tdt] configured: range=%.2f shrink=%.2f order=%d maxDx=%d TL=%.1f iter=%d v=%.2f a=%.2f norm=%d "
+        "| two_level=%d global_window=%.1f backbone_age=%.1f dilate=%d strict=%d",
+        p_max_range_, p_shrink_, p_order_, p_max_dx_, p_tl_, p_collision_iter_, p_max_speed_, p_max_acc_,
+        (int)p_norm_time_, (int)p_two_level_, p_global_window_, p_backbone_age_,
+        static_cast<int>(p_dilate_cells_), (int)p_strict_collision_);
   }
 
   void cleanup() override {}
@@ -544,8 +555,8 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
         }
         const double s_now = backbone_s_[bi];
         const double s_total = backbone_s_.back();
-        if (s_total - s_now > p_local_window_ + 0.5) {
-          const double s_goal = s_now + p_local_window_;
+        if (s_total - s_now > p_global_window_ + 0.5) {
+          const double s_goal = s_now + p_global_window_;
           size_t gi = bi;
           while (gi + 1 < backbone_s_.size() && backbone_s_[gi + 1] < s_goal) ++gi;
           gx_solve = backbone_[gi].x(); gy_solve = backbone_[gi].y();
@@ -1628,7 +1639,7 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_rog_obs_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_rog_win_;
   std::vector<int8_t> rog_grid_snapshot_;
-  double p_local_window_ = 8.0;
+  double p_global_window_ = 30.0;   // 全局规划器内"用动态层优化多远"（≥场地尺寸=全图）
   double p_backbone_age_ = 5.0;
   std::vector<Eigen::Vector2f> backbone_;
   std::vector<double> backbone_s_;

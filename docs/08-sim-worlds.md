@@ -5045,7 +5045,7 @@ velocity_smoother[3,3,3] → fake_vel_transform → 底盘（上限 2.32 m/s）
 | 规划 | max_speed / max_acc | 3.0 / 3.0 |
 | 规划 | corridor / shrink / order / maxDx | 2.5 / 0 / 6 / 3 |
 | 规划 | TL / iter / simplify | 10 s / 6 / 0.1 |
-| 规划 | two_level / local_window | true / 8.0 m |
+| 规划 | two_level / global_window | true / 30.0 m（≥场地尺寸 ⇒ 全图吃动态层）|
 | 规划 | use_rog_map | **false（默认，需手动开）** |
 | 规划 | recovery_enable / escape | true / 1.5 m @ 0.3 m/s |
 | 控制 | lookahead / vmax / amax / max_w | 4.0 / 3.0 / 4.0 / 3.0 |

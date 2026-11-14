@@ -55,6 +55,7 @@ private:
   double current_angle_;
   double base_link_angle_;
   float spin_speed_;
+  bool chassis_yaw_zero_{false};   // true ⇒ 解耦但不下发底盘自转（w 恒 0）
 };
 
 }  // namespace fake_vel_transform

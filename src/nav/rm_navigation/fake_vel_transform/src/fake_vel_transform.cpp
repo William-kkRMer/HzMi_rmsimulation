@@ -31,6 +31,15 @@ FakeVelTransform::FakeVelTransform(const rclcpp::NodeOptions & options)
   // Declare and get the spin speed parameter
   this->declare_parameter<float>("spin_speed", 0.0);   // ★ 默认改 0（直通）：-6.0 会让任何转向指令被替换成 6 rad/s 的小陀螺
   this->get_parameter("spin_speed", spin_speed_);
+    // ★★★ 2026-11-14：**第三种模式 —— 解耦但不下发底盘自转**。
+    //   场景：真车云台在转（雷达跟着转）⇒ 需要 base_link_fake + 线速度按 Δθ 换算；
+    //         但**不想让底盘自己转**（我们的控制器 heading_gain=0，本来就不控朝向）。
+    //   三种模式：
+    //     spin_speed=0  且 chassis_yaw_zero=false ⇒ 直通（仿真默认，等价普通 nav2）
+    //     spin_speed≠0  且 chassis_yaw_zero=false ⇒ 原上游语义（想转 ⇒ 底盘按 spin_speed 自转）
+    //     spin_speed≠0  且 chassis_yaw_zero=true  ⇒ 解耦但 w 恒 0（线速度照旧按 Δθ 旋转）
+    this->declare_parameter<bool>("chassis_yaw_zero", false);
+    this->get_parameter("chassis_yaw_zero", chassis_yaw_zero_);
 
   // TF broadcaster
   tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
@@ -115,7 +124,8 @@ void FakeVelTransform::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr
     double angle_diff = -current_angle_;
 
     geometry_msgs::msg::Twist aft_tf_vel;
-    aft_tf_vel.angular.z = (msg->angular.z != 0) ? spin_speed_ : 0;
+    // ★ chassis_yaw_zero:=true ⇒ 解耦但**不下发底盘自转**（角速度恒 0）
+    aft_tf_vel.angular.z = chassis_yaw_zero_ ? 0.0 : ((msg->angular.z != 0) ? spin_speed_ : 0);
     aft_tf_vel.linear.x = msg->linear.x * cos(angle_diff) + msg->linear.y * sin(angle_diff);
     aft_tf_vel.linear.y = -msg->linear.x * sin(angle_diff) + msg->linear.y * cos(angle_diff);
 

@@ -313,6 +313,47 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
       }
       return true;
     };
+    // ★★★ 2026-11-14（实测：MinSnap 结果被拒 79/79）：MinSnap 专用校验。
+    //   现象：一轮 573 s 里 `MinSnap 轨迹**穿墙** ⇒ 拒绝，回退 A* 简化路径` 出现 79 次，
+    //         而 `MinSnap 失败` 是 0 次 ⇒ 平滑器每次都成功，只是被我们的 0 容差 path_clear 全否决
+    //         ⇒ 实际一直在跟 A* 的粗折线走（抖动、速度不连续）。
+    //   根因：T-DT 在 strict_collision=false 下允许线段切过 ≤2 个障碍格（官方 doc 原话），
+    //         其走廊又按 dilate_cells*res 膨胀过 ⇒ 采样点之间的直线经常擦 1 格。
+    //   折中（与"墙必须拒、动态层不否决"一致）：
+    //     · 静态墙：仍然 0 容差（一格都不许穿）
+    //     · 动态格：允许 ≤1 格（感知噪声/擦边不算穿墙）
+    auto seg_ok_ms = [&](const Eigen::Vector2f& a, const Eigen::Vector2f& b,
+                         bool skip_first, bool skip_last) -> bool {
+      int x0 = static_cast<int>(std::floor(a.x() / res)), y0 = static_cast<int>(std::floor(a.y() / res));
+      const int x1 = static_cast<int>(std::floor(b.x() / res)), y1 = static_cast<int>(std::floor(b.y() / res));
+      const int dx = std::abs(x1 - x0), dy = std::abs(y1 - y0);
+      const int sx = (x0 < x1) ? 1 : -1, sy = (y0 < y1) ? 1 : -1;
+      int err = dx - dy, dyn_run = 0;
+      for (int guard = 0; guard < 100000; ++guard) {
+        if (x0 < 0 || y0 < 0 || x0 >= static_cast<int>(W) || y0 >= static_cast<int>(H)) return false;
+        const bool at_first = (guard == 0 && skip_first);
+        const bool at_last = (x0 == x1 && y0 == y1 && skip_last);
+        const size_t idx = static_cast<size_t>(y0) * W + x0;
+        if (!at_first && !at_last && a_occ[idx]) {
+          const bool is_static = !a_occ_static_backup_.empty() && a_occ_static_backup_[idx];
+          if (is_static) return false;
+          if (++dyn_run > 1) return false;
+        } else {
+          dyn_run = 0;
+        }
+        if (x0 == x1 && y0 == y1) break;
+        const int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+      }
+      return true;
+    };
+    auto path_clear_ms = [&](const std::vector<Eigen::Vector2f>& pts) -> bool {
+      const size_t n = pts.size();
+      for (size_t i = 1; i < n; ++i)
+        if (!seg_ok_ms(pts[i - 1], pts[i], i == 1, i + 1 == n)) return false;
+      return true;
+    };
     auto path_clear = [&](const std::vector<Eigen::Vector2f>& pts) -> bool {
       const size_t n = pts.size();
       for (size_t i = 1; i < n; ++i)
@@ -1028,7 +1069,7 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
       }
     }
 
-    if (res_solve.success && res_solve.path.size() >= 2 && path_clear(res_solve.path)) {
+    if (res_solve.success && res_solve.path.size() >= 2 && path_clear_ms(res_solve.path)) {
       traj_pts = res_solve.path;
     } else {
       if (res_solve.success)

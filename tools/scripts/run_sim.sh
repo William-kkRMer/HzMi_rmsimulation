@@ -199,9 +199,20 @@ export ROS_HOME="$RUN_DIR/roshome"
 LOG_FILE="$RUN_DIR/launch.log"
 # 分层汇总 CSV（nav_stage_monitor 每 2 s 追加一行；用环境变量注入，不用改 launch）
 export NAV_LAYER_CSV="$RUN_DIR/layers.csv"
+# ★★★ 2026-11-17（用户问"rosbag 有没有开关"）：**加一个开关**。
+#   原来完全没有录包能力，出问题只能靠日志复盘；现在：
+#     BAG=1 ./tools/scripts/run_sim.sh            # 录默认话题
+#     BAG=1 BAG_TOPICS="/livox/imu /tf" ...       # 自定义话题
+#     BAG=1 BAG_MAX_MB=4096 ...                   # 单文件上限（默认 2048 MB）
+#   产物：.tmp_diag/run/<时间戳>/bag/（可直接 ros2 bag play）
+BAG="${BAG:-0}"
+BAG_MAX_MB="${BAG_MAX_MB:-2048}"
+BAG_TOPICS="${BAG_TOPICS:-/livox/imu /livox/lidar /localization/odometry /plan /trajectory_plan /cmd_vel /cmd_vel_chassis /plan_mask /tf /tf_static}"
+BAG_PID=""
 echo "  本次日志目录    = $RUN_DIR"
 echo "                    合并: launch.log   分层: by_layer/   每节点: roslog/   CSV: layers.csv"
 echo "                    事后看: tail -f \"$LOG_FILE\""
+  echo "  录包            = $([ "$BAG" = "1" ] && echo "开（$RUN_DIR/bag，上限 ${BAG_MAX_MB} MB）" || echo "关（BAG=1 开）")"
 
 UWB_PID=""
 post_run() {
@@ -209,6 +220,7 @@ post_run() {
   [ "${POST_RAN:-0}" = "1" ] && return 0
   POST_RAN=1
   if [ -n "$UWB_PID" ]; then kill "$UWB_PID" 2>/dev/null || true; fi
+    if [ -n "$BAG_PID" ]; then kill -INT "$BAG_PID" 2>/dev/null || true; sleep 2; kill -TERM "$BAG_PID" 2>/dev/null || true; fi
   kill $READY_WATCHER 2>/dev/null
   # ★ 按"层"切分合并日志（一层可能跨多个节点，与 roslog/ 的按节点是两回事）
   "$REPO/tools/scripts/nav/split_run_log.py" "$RUN_DIR" 2>/dev/null || true
@@ -266,6 +278,16 @@ fi
   for a in "${EXTRA_ARGS[@]}"; do ARGSTR="$ARGSTR $(printf '%q' "$a")"; done
   setsid bash -c "ros2 launch rm_nav_bringup '$LAUNCH_FILE' gravity:=base $ARGSTR 2>&1 | tee -a '$LOG_FILE'" &
   LAUNCH_PID=$!
+  # ★ 录包：等 8 s（让 gz/时钟/话题都起来）再开始，退出时由 post_run 收尾
+  if [ "$BAG" = "1" ]; then
+    (
+      sleep 8
+      echo "  [bag] 开始录制 → $RUN_DIR/bag"
+      exec ros2 bag record -o "$RUN_DIR/bag" \
+           --max-bag-size $((BAG_MAX_MB * 1024 * 1024)) $BAG_TOPICS
+    ) >"$RUN_DIR/bag_record.log" 2>&1 &
+    BAG_PID=$!
+  fi
   trap 'echo; echo "  [中断] 正在结束整个进程组…"; kill -INT -$LAUNCH_PID 2>/dev/null' INT TERM
 
   wait $LAUNCH_PID

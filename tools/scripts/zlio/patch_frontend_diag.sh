@@ -27,12 +27,52 @@ try:
     i=[k for k,l in enumerate(lines) if l.strip()=='for (const auto& result : results) {'][0]
 except IndexError:
     print('  ✗ 没找到结果循环（上游代码结构变了？）'); raise SystemExit(1)
-block='''      // ★★★ 2026-11-17：把上游已经算好、只是不打印的量打出来（1 Hz）。
-      //   matches / lidar_updated 本来就在 FrontendFrame 消息里；cov_trace 是 15 维误差协方差的迹。
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-          "[diag] frame: matches=%zu lidar_updated=%d cloud=%zu cov_trace=%.4f",
-          result.matches, static_cast<int>(result.lidar_updated), result.cloud.size(),
-          result.estimate.covariance.trace());'''.split('\n')
+block='''      // ★★★ 2026-11-17：前端诊断三件套（全部用上游已经算好的量，不新增计算）
+      //   ① 1 Hz 日志  ② CSV（$ROS_LOG_DIR/zlio_frames.csv）  ③ 协方差迹超阈值 WARN
+      {
+        const double cov_trace = result.estimate.covariance.trace();
+        const double t_sec = static_cast<double>(result.estimate.state.time) * 1e-9;
+        const auto& pos = result.estimate.state.pose.position;
+        static std::ofstream csv;
+        static bool csv_ready = false;
+        static double cov_warn = -1.0;
+        if (cov_warn < 0.0) {
+          const char* w = std::getenv("ZLIO_COV_WARN");
+          cov_warn = (w && *w) ? std::atof(w) : 0.5;
+        }
+        if (!csv_ready) {
+          csv_ready = true;
+          const char* env = std::getenv("ZLIO_DIAG_CSV");
+          std::string path;
+          if (env && *env) {
+            path = env;
+          } else {
+            const char* ld = std::getenv("ROS_LOG_DIR");
+            path = std::string(ld && *ld ? ld : "/tmp") + "/zlio_frames.csv";
+          }
+          csv.open(path, std::ios::app);
+          if (csv) {
+            if (csv.tellp() == 0) csv << "t_ros,matches,lidar_updated,cloud,cov_trace,x,y,z\n";
+            RCLCPP_INFO(get_logger(), "[diag] CSV → %s", path.c_str());
+          } else {
+            RCLCPP_WARN(get_logger(), "[diag] CSV 打不开：%s（只打日志）", path.c_str());
+          }
+        }
+        if (csv) {
+          csv << t_sec << ',' << result.matches << ',' << static_cast<int>(result.lidar_updated)
+              << ',' << result.cloud.size() << ',' << cov_trace << ',' << pos.x() << ','
+              << pos.y() << ',' << pos.z() << '\n';
+          csv.flush();
+        }
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+            "[diag] frame: matches=%zu lidar_updated=%d cloud=%zu cov_trace=%.4f",
+            result.matches, static_cast<int>(result.lidar_updated), result.cloud.size(), cov_trace);
+        if (cov_trace > cov_warn) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+              "[diag] 协方差迹 %.3f > %.2f（matches=%zu lidar_updated=%d）⇒ 定位不确定性偏大",
+              cov_trace, cov_warn, result.matches, static_cast<int>(result.lidar_updated));
+        }
+      }'''.split('\n')
 lines[i+1:i+1]=block
 open(p,'w').write('\n'.join(lines))
 print('  ✓ 已插入 [diag] frame 日志')

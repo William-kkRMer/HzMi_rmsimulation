@@ -19,7 +19,7 @@ ground_segmentation:
     #   实测方法：bag 里统计雷达系 z 的直方图（排除插件发的 (0,0,0) 假点），地面峰在 z = −0.226m。
     #   （URDF 几何算是 base_link+0.175 + 车高≈0.06 = 0.235m；Gazebo 里轮胎略有下沉，实测 0.226m。）
     #   ⚠️ 这是**每个平台各自标定**的量：换车/换安装位置/上实车都要重新量，不能照抄。
-    sensor_height: 0.188         # 起伏底盘：base_link 离地 0.098 + 雷达 z 0.09 = 0.188        # SIMULATION sensor height above ground (measured).
+    sensor_height: 0.348         # 起伏底盘：base_link 离地 0.098 + 雷达 z 0.09 = 0.188        # SIMULATION sensor height above ground (measured).
     min_slope: -0.4             # minimum slope of a ground line.
     max_slope: 0.4              # maximum slope of a ground line.
     max_fit_error: 0.05         # maximum error of a point during line fit.

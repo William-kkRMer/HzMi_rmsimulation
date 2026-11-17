@@ -245,7 +245,9 @@
     </inertial>
   </link>
   <joint name="imu_joint" type="fixed">
-    <origin xyz="0 0 0.04" rpy="0 0 0"/>
+    <!-- ★ 2026-11-18：随雷达一起抬高（0.04→0.20），保持 lidar−imu = 0.05 m，
+         与 zlio 默认 `body_from_lidar` 平移 [0,0,0.044] 一致；这样抬高后不用改 zlio 配置。 -->
+    <origin xyz="0 0 0.20" rpy="0 0 0"/>
     <parent link="base_link"/><child link="imu_link"/>
   </joint>
   <gazebo reference="imu_link">
@@ -278,7 +280,7 @@
        否则 TF（URDF）与 gz 里的点云朝向会不一致 ⇒ LIO 直接把倾斜当成姿态误差。 -->
   <xacro:arg name="rpy" default="0 0 0"/>
   <xacro:mid360 name="livox_frame" parent="base_link" topic="/livox/lidar">
-    <origin xyz="0 0 0.09" rpy="$(arg rpy)"/>
+    <origin xyz="0 0 0.25" rpy="$(arg rpy)"/>
   </xacro:mid360>
   <gazebo>
     <plugin name="mecanum_controller" filename="libgazebo_ros_planar_move.so">

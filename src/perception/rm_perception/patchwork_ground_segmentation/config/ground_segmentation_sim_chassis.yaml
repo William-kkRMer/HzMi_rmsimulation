@@ -31,7 +31,9 @@ ground_segmentation:
     #   config/segmentation_sim.yaml 与 docs/issues_and_findings.md 第 26 条；
     #   URDF 几何 = base_link→livox 0.175 + 车高≈0.06 ≈ 0.235，Gazebo 轮胎略下沉 ⇒ 0.226）。
     #   ⚠ RMUC2026 用同一台车同一安装位 ⇒ 同一值；换车/换安装位必须重标（与 linefit 同理）。
-    sensor_height: 0.188   # 起伏底盘：base_link 离地 0.098 + 雷达 z 0.09
+    # ★★★ 2026-11-18：雷达抬高后（base_link 0.098 + livox z 0.25）= **0.348 m**。
+    #   原来是 0.188（livox z=0.09，太低：34.7% 的点落在 0.5 m 内、在看自己的车体）。
+    sensor_height: 0.348
     # 地面估计的有效半径 [m]。[本仓决定] min_range = linefit 的 r_min = 0.2（相同近场截断：
     #   更小的点上游会判 nonground ⇒ 变成障碍 ⇒ p2l 会在近处生成假墙）。
     min_range: 0.2

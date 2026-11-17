@@ -185,6 +185,12 @@ def generate_launch_description():
         executable='zlio_node',
         name='zlio_node',
         output='screen',
+          # ★★★ 2026-11-18（TF 树清理）：前端会发一条 `odom → imu` 的**悬空边**
+          #   （URDF 里没有 `imu` 这个 link）⇒ TF 树里 base_link 同时有 map（后端 legacy）
+          #   与 odom（我方适配器）两个父，imu 又挂在 odom 下 ⇒ 查 base_link 出现歧义。
+          #   修法：把前端的 /tf 改道到 /tf_zlio_frontend（无人订阅），只留
+          #     map→odom（静态）+ odom→base_link（适配器）+ base_link→imu_link（URDF）。
+          remappings=[('/tf', '/tf_zlio_frontend')],
         parameters=[{
             'config_file': PathJoinSubstitution([FindPackageShare('frontend'), 'config', 'lio.yaml']),
             'input_type': 'livox',

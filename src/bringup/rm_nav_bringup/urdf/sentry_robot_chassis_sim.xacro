@@ -232,7 +232,18 @@
   </joint>
 
   <!-- 仿真附加（原 URDF 没有；几何/惯量/碰撞一律不动）-->
-  <link name="imu_link"/>
+  <!-- ★★★ 2026-11-18（zlio 作者反馈：IMU 有巨大尖峰）：
+       原来 `imu_link` 是**没有惯量的空 link**，而 Gazebo 的 IMU 传感器要从该 link 的动力学量
+       算比力 ⇒ 无质量 link 在"planar_move 强制速度 + 贴墙接触"时会吐出 25 g 级假冲量。
+       实测：|acc| 峰值 246 m/s²、相邻样本跳变 463 m/s²，402 次异常全部发生在离墙 <0.6 m 处。
+       修法：给 imu_link 一个很小的真实惯量（mass 0.01 kg、I=1e-6），几何尺寸仍为 0（不参与碰撞）；
+       同时补上 MID-360 量级的噪声（原来完全没有 <noise>）：陀螺 0.002 rad/s、加计 0.02 m/s²。 -->
+  <link name="imu_link">
+    <inertial>
+      <mass value="0.01"/>
+      <inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/>
+    </inertial>
+  </link>
   <joint name="imu_joint" type="fixed">
     <origin xyz="0 0 0.04" rpy="0 0 0"/>
     <parent link="base_link"/><child link="imu_link"/>
@@ -240,6 +251,18 @@
   <gazebo reference="imu_link">
     <sensor name="chassis_imu" type="imu">
       <always_on>true</always_on><update_rate>100</update_rate>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
       <plugin name="imu_plugin" filename="libgazebo_ros_imu_sensor.so">
         <ros><namespace>/</namespace><remapping>~/out:=/livox/imu</remapping></ros>
         <frame_name>imu_link</frame_name>

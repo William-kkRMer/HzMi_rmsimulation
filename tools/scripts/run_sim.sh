@@ -207,7 +207,7 @@ export NAV_LAYER_CSV="$RUN_DIR/layers.csv"
 #   产物：.tmp_diag/run/<时间戳>/bag/（可直接 ros2 bag play）
 BAG="${BAG:-0}"
 BAG_MAX_MB="${BAG_MAX_MB:-2048}"
-BAG_TOPICS="${BAG_TOPICS:-/livox/imu /livox/lidar /localization/odometry /plan /trajectory_plan /cmd_vel /cmd_vel_chassis /plan_mask /tf /tf_static}"
+BAG_TOPICS="${BAG_TOPICS:-/livox/imu /livox/lidar /localization/odometry /plan /trajectory_plan /cmd_vel /cmd_vel_chassis /plan_mask /tf /tf_static /clock}"
 # ★ 2026-11-17：**UWB=1 时自动把 /uwb_pose 加进录包清单**（否则录了包却没有 UWB，事后无法复现）。
 if [ "$UWB" = "1" ]; then
   case " $BAG_TOPICS " in

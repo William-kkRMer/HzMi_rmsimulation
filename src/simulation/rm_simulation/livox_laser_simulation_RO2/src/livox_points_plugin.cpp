@@ -291,6 +291,8 @@ namespace gazebo
         //   这里与 header.stamp 同一时间轴（仿真钟，ns）。
         pp_livox.timebase = base_ns;
         int count = 0;
+        // 本帧第一个有效点的方位角（逐点时间锚点，2026-11-18）
+        double first_azimuth = 0.0;
 
         // 用于 PointCloud2 类型消息发布
         sensor_msgs::msg::PointCloud2 cloud2;
@@ -431,13 +433,21 @@ namespace gazebo
             //   仿真里帧内无运动，正确值就是 0（FAST-LIO 于是得到 lidar_end_time == header 戳，自洽）。
             //   若将来真要建帧内运动模型，应使用 scan_mode/mid360.csv 的 Time 列（单位需先确认），
             //   而不是墙钟。
-            if (intra_frame_time && valid_points > 1) {
-                p.offset_time = static_cast<uint32_t>(
-                    static_cast<uint64_t>(count) * period_ns /
-                    static_cast<uint64_t>(valid_points));
-            } else {
-                p.offset_time = 0;
-            }
+              // ★★★ 2026-11-18（按 zlio 作者反馈修正）：
+              //   原来 offset_time 按"点序号"均匀铺满一帧（count/N × period）——与实际旋转扫描
+              //   时序无关：同一时刻测到的点被赋了相差整帧的时间 ⇒ 去畸变按错误的时间差旋转
+              //   点云 ⇒ 转起来整帧被"拧"。作者原话："平均离散逐点时间会导致错误去畸变"。
+              //   改为**按方位角线性映射**：以本帧第一个有效点方位角为 0，
+              //   offset = wrap(az − az0)/2π × period ⇒ 同一方位角同一时刻，物理自洽。
+              if (intra_frame_time && valid_points > 1) {
+                  const double two_pi = 2.0 * M_PI;
+                  if (count == 0) { first_azimuth = rotate_info.azimuth; }
+                  double frac = (rotate_info.azimuth - first_azimuth) / two_pi;
+                  frac -= std::floor(frac);                       // → [0,1)
+                  p.offset_time = static_cast<uint32_t>(frac * static_cast<double>(period_ns));
+              } else {
+                  p.offset_time = 0;
+              }
 
             // 将点云数据添加到 CustomMsg 消息中
             pp_livox.points.push_back(p);

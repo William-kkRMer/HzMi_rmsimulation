@@ -415,7 +415,7 @@ output:
     # 兼容接口是否发布有界历史路径。
     publish_path: false
     # 兼容接口是否发布 map 到 body TF。
-    publish_tf: true
+    publish_tf: false
     # INITIALIZING 时兼容接口是否发布输出。
     publish_initializing: false
     # SUSPECT/LOST 时兼容接口是否发布冻结输出。

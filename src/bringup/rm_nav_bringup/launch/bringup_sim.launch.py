@@ -3213,6 +3213,12 @@ def generate_launch_description():
                     'T-DT 控制器直接发机体系 ⇒ 默认 false；'
                     '开着会与控制器**抢 /cmd_vel_chassis**（汽车不动）。')
 
+    declare_tf_stamp_ahead_cmd = DeclareLaunchArgument(
+        'tf_stamp_ahead', default_value='0.04',
+        description='我方适配器发 odom→base_link 的时间戳前瞻（秒）。'
+                    '0.04 = 历史默认（解决 nav2 costmap 激活时"永远差一拍"）；'
+                    '0.0 = 严格 now()，用于验证时间戳是否干净（可能让 costmap 报 Requested time 超限）')
+
     declare_use_zlio_tf_adapter_cmd = DeclareLaunchArgument(
         'use_zlio_tf_adapter', default_value='false',
         description='是否由我方的 zlio_tf_adapter 补发 odom→base_link TF。'
@@ -4287,6 +4293,10 @@ def generate_launch_description():
             'max_age': 0.5,
             'publish_rate': 50.0,
             'flatten_z': True,
+            # ★ 2026-11-18：**TF 时间戳前瞻**（秒）。0 = 严格用 now()，与其它消息同一时间轴；
+            #   0.04 = 历史补丁（nav2 costmap 激活时 `Requested time <now> but latest data at
+            #   <now-Δ>` 的结构性差一拍）。想验证"时间戳是否干净"时用 `tf_stamp_ahead:=0.0` 跑一轮。
+            'stamp_ahead': LaunchConfiguration('tf_stamp_ahead'),
         }]
     )
 
@@ -5037,6 +5047,7 @@ def generate_launch_description():
     ld.add_action(declare_global_obstacle_cmd)
     ld.add_action(declare_use_world_vel_to_body_cmd)
     ld.add_action(declare_use_zlio_tf_adapter_cmd)
+    ld.add_action(declare_tf_stamp_ahead_cmd)
     ld.add_action(declare_local_obstacle_cmd)
     # ★★ 2026-10-21（契约 §4.14）：`gravity` 的组合检查 + t=0 收据。
     #   · 6 个旧参数（硬报错别名）在这里**统一**校验：传非默认值 ⇒ t=0 停，消息指向 gravity；

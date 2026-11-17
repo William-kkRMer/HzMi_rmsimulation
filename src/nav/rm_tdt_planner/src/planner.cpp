@@ -409,6 +409,28 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
         if (!seg_clear_static(pts[i - 1], pts[i], i == 1, i + 1 == n)) return false;
       return true;
     };
+      // ★★★ 2026-11-17：**安全简化（我们自己的，0 容差）**。
+      //   实测（20261117_224819）：224 次规划里 `简化路径穿墙` **216 次**，
+      //   退回 0.30 后仍 15 次判穿墙 ⇒ return {} ⇒ nav2 `GridBased failed` ⇒ `Goal failed` ⇒ 车停。
+      //   根因：T-DT 的 DP 化简允许线段穿过 ≤2 个障碍格，而静态图的墙就是 1~2 格厚
+      //   ⇒ 几乎每条简化路径都能"合法切墙"。这里改成贪心 + 0 容差，保证不切墙。
+      auto safe_simplify = [&](const std::vector<Eigen::Vector2f>& pts, double min_step) {
+        std::vector<Eigen::Vector2f> out;
+        if (pts.size() < 2) return pts;
+        out.push_back(pts.front());
+        size_t ii = 0;
+        const size_t n = pts.size();
+        while (ii + 1 < n) {
+          size_t best = ii + 1;
+          for (size_t jj = n - 1; jj > ii + 1; --jj) {
+            if ((pts[jj] - pts[ii]).norm() < min_step && jj + 1 < n) continue;
+            if (seg_clear_static(pts[ii], pts[jj], ii == 0, jj + 1 == n)) { best = jj; break; }
+          }
+          out.push_back(pts[best]);
+          ii = best;
+        }
+        return out;
+      };
 
     // ★★ 2026-11-09：**ROGMap 进程内查询**（替代 /plan_mask）
     //   MapRegistry 是进程内静态注册表，ROGMapROS 构造时 init() 会把自己塞进去。
@@ -925,28 +947,32 @@ class TdtPlanner : public nav2_core::GlobalPlanner {
     //   ⇒ 梯形时间被碎段放大 10 倍（日志里大量 `A* 55→简化 55` 就是这么来的）。
     //   正确做法：2 点（一段直线）是合法输入，交给 MinSnap 解单段；只有 <2 才退回。
     if (path_s.size() < 2) path_s = path;
-    // ★ 严格校验简化路径：DP 的首末连线判据用了 T-DT 的 2 格容差，可能切过薄墙
+    // ★ 严格校验 T-DT 的简化路径：它的 DP 允许穿 ≤2 格 ⇒ 薄墙几乎必然被切
     if (!path_clear_static(path_s)) {
-      RCLCPP_WARN(logger_, "[tdt] 简化路径穿墙(静态墙) ⇒ 退回 A* 原始栅格路径(%zu 点)", path.size());
-      // ★★ 2026-11-10：退回到 **栅格原始路径**后必须先脱密。
-      //   0.05 m 间距的 134 点喂给 MinSnap ⇒ 生成 1331 点 / 37 s 的"病态轨迹"，
-      //   控制器照着它跑 ⇒ T3 跟踪误差 ⇒ 逃逸失败 ⇒ A* 无解（实测整条链）。
-      //   这里重新用更大的阈值简化，点距至少 ~0.3 m 才交给优化器。
-      path_s = astar.simplifyPath(path, 0.30f);
-      if (path_s.size() < 2) path_s = path;
-      const bool raw_bad_static = !path_clear_static(path_s);
-      if (raw_bad_static) {
-        RCLCPP_ERROR(logger_,
-            "[tdt] A* 原始路径穿**静态墙** ⇒ 拒绝本次规划（交给 nav2 重试/恢复）");
-        return nav_msgs::msg::Path{};
+      // 先按 0.30 试一次；仍不行就换**我们自己的安全简化**（0 容差）
+      auto path_coarse = astar.simplifyPath(path, 0.30f);
+      if (path_coarse.size() >= 2 && path_clear_static(path_coarse)) {
+        path_s = path_coarse;
+      } else {
+        path_s = safe_simplify(path, 0.25);
+        if (path_s.size() < 2) path_s = path;
+        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 3000,
+            "[tdt] T-DT 简化切墙 ⇒ 改用安全简化(%zu 点, 0 容差)", path_s.size());
+      }
+      if (!path_clear_static(path_s)) {          // 理论上不会发生，兜底用原始栅格路径
+        if (!path_clear_static(path)) {
+          RCLCPP_ERROR(logger_,
+              "[tdt] A* 原始路径穿**静态墙** ⇒ 拒绝本次规划（交给 nav2 重试/恢复）");
+          return nav_msgs::msg::Path{};
+        }
+        path_s = path;
       }
       if (!path_clear(path_s)) {
-        // 只有动态层（ROGMap/mask）挡着 ⇒ 仍发布，让控制器去绕/减速；
-        // 否决它会让"感知噪声"变成"车完全不动"，代价更大。
-        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 2000,
-            "[tdt] 原始路径与**动态层**相交（非墙）⇒ 仍发布，交给控制器/重规划处理");
+        RCLCPP_WARN_THROTTLE(logger_, *node_->get_clock(), 3000,
+            "[tdt] 路径与**动态层**相交（非墙）⇒ 仍发布，交给控制器/重规划处理");
       }
     }
+
 
     pub_simpl_->publish(make_path(path_s, ox, oy));
 

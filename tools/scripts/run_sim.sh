@@ -286,12 +286,44 @@ fi
   setsid bash -c "ros2 launch rm_nav_bringup '$LAUNCH_FILE' gravity:=base $ARGSTR 2>&1 | tee -a '$LOG_FILE'" &
   LAUNCH_PID=$!
   # ★ 录包：等 8 s（让 gz/时钟/话题都起来）再开始，退出时由 post_run 收尾
+    # ★★★ 2026-11-17：**录包必须带 QoS 覆盖，否则收不到点云**。
+    #   实测（20261117_222119 的 bag_record.log）：
+    #     New publisher discovered on topic '/livox/lidar', offering incompatible QoS.
+    #     No messages will be sent to it. Last incompatible policy: RELIABILITY
+    #   ⇒ livox CustomMsg 是 BEST_EFFORT，而 `ros2 bag record` 默认 RELIABLE 订阅
+    #   ⇒ **包里完全没有点云**（其它话题正常）。这和 cloud_crop→STVL 那个坑是同一类。
+    #   修法：给传感器话题显式写 best_effort（reliable publisher 对 best_effort sub 也兼容）。
+    BAG_QOS="$RUN_DIR/bag_qos.yaml"
+    cat >"$BAG_QOS" <<'QOSEOF'
+# 录包用的 QoS 覆盖：传感器数据用 best_effort（否则 reliable 订阅收不到）
+/livox/lidar:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 5
+/livox/imu:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 50
+/tf:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/tf_static:
+  reliability: reliable
+  durability: transient_local
+  history: keep_last
+  depth: 100
+QOSEOF
   if [ "$BAG" = "1" ]; then
     (
       sleep 8
       echo "  [bag] 开始录制 → $RUN_DIR/bag"
       exec ros2 bag record -o "$RUN_DIR/bag" \
-           --max-bag-size $((BAG_MAX_MB * 1024 * 1024)) $BAG_TOPICS
+           --max-bag-size $((BAG_MAX_MB * 1024 * 1024)) \
+           --qos-profile-overrides-path "$BAG_QOS" $BAG_TOPICS
     ) >"$RUN_DIR/bag_record.log" 2>&1 &
     BAG_PID=$!
   fi
@@ -308,7 +340,10 @@ fi
   fi
   set -e
 
-  if [ "$LAUNCH_RC" -ne 0 ]; then
+  # ★ 2026-11-17：**rc=130/143 是正常退出**（128+2=SIGINT / 128+15=SIGTERM）
+  if [ "$LAUNCH_RC" -eq 130 ] || [ "$LAUNCH_RC" -eq 143 ]; then
+    echo "  ℹ 已结束（rc=$LAUNCH_RC = Ctrl-C/TERM，不是异常）"
+  elif [ "$LAUNCH_RC" -ne 0 ]; then
     echo
     echo "  ✗ launch 异常退出（rc=$LAUNCH_RC）——错误原文："
     grep -E "\[ERROR\]|Traceback|Caught exception" "$LOG_FILE" 2>/dev/null | tail -6 | sed 's/^/    /' || true

@@ -19,7 +19,25 @@ from nav_msgs.msg import Odometry
 from tf2_msgs.msg import TFMessage
 from rosgraph_msgs.msg import Clock
 
+def resolve(path):
+    """bag 目录 / .db3 都能用；录制中的包没有 metadata.yaml，直接读 db3。"""
+    import os, glob
+    if os.path.isfile(path):
+        return path, ''
+    meta = os.path.join(path, 'metadata.yaml')
+    if os.path.isfile(meta):
+        return path, ''
+    for cand in (path, os.path.join(path, 'bag')):
+        dbs = sorted(glob.glob(os.path.join(cand, '*.db3')), key=os.path.getmtime)
+        if dbs:
+            return dbs[-1], '（没有 metadata.yaml：包可能还在录，或没收尾干净 ⇒ 直接读 db3）'
+    return path, '（目录里既没有 metadata.yaml 也没有 .db3）'
+
+
 def main(path):
+    path, note = resolve(path)
+    if note:
+        print(f'   {note}')
     r = SequentialReader()
     r.open(StorageOptions(uri=path, storage_id='sqlite3'), ConverterOptions('', ''))
     cloud, imu, odom = [], [], []
@@ -30,7 +48,16 @@ def main(path):
         if t == '/livox/lidar':
             m = deserialize_message(d, CustomMsg)
             off = max([p.offset_time for p in m.points]) if m.points else 0
-            cloud.append((m.timebase * 1e-9, (m.timebase + off) * 1e-9, len(m.points)))
+            pts = m.points
+            near5 = near25 = 0
+            for q in pts:
+                rr = (q.x * q.x + q.y * q.y + q.z * q.z) ** 0.5
+                if rr < 0.5:
+                    near5 += 1
+                if rr < 0.25:
+                    near25 += 1
+            cloud.append((m.timebase * 1e-9, (m.timebase + off) * 1e-9, len(pts),
+                          near5 / max(1, len(pts)), near25 / max(1, len(pts))))
         elif t == '/livox/imu':
             m = deserialize_message(d, Imu)
             imu.append(m.header.stamp.sec + m.header.stamp.nanosec * 1e-9)
@@ -50,12 +77,14 @@ def main(path):
     if cloud:
         c = np.array(cloud)
         print(f'   点云 {len(c)} 帧 | timebase {c[0,0]:.3f} → {c[-1,0]:.3f} s | 每帧跨 {1000*np.median(c[:,1]-c[:,0]):.1f} ms | 点数中位 {int(np.median(c[:,2]))}')
+        print(f'   自击比例: <0.5 m {100*np.median(c[:,3]):.1f}%  <0.25 m {100*np.median(c[:,4]):.1f}%'
+              f'  （抬高雷达前实测 34.7% / 31.7%；越低越好，zlio minimum_range=0.5 m 会丢弃 <0.5 m 的点）')
     if imu:
         a = np.array(imu); dt = np.diff(a)
         print(f'   IMU  {len(a)} 个 | {a[0]:.3f} → {a[-1]:.3f} s | 间隔中位 {1000*np.median(dt):.1f} ms | 单调 {bool(np.all(dt > 0))}')
     if cloud and imu:
         a = np.array(imu); c = np.array(cloud)
-        cnt = np.array([int(((a >= tb) & (a <= te + 0.02)).sum()) for tb, te, _ in c])
+        cnt = np.array([int(((a >= tb) & (a <= te + 0.02)).sum()) for tb, te, *_ in c])
         print(f'   每帧窗口内 IMU 数: 中位 {int(np.median(cnt))} 最小 {cnt.min()} 最大 {cnt.max()}'
               f'  （100 Hz 时 100 ms 窗口应 ≈ 10~12）')
     if odom:
